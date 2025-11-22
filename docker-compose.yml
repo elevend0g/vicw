@@ -1,0 +1,131 @@
+version: '3.8'
+
+services:
+  # VICW API Server
+  vicw_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vicw_api
+    ports:
+      - "8000:8000"
+    environment:
+      # LLM Configuration
+      - VICW_LLM_API_KEY=${VICW_LLM_API_KEY}
+      - VICW_LLM_API_URL=${VICW_LLM_API_URL:-https://api.openrouter.ai/api/v1/chat/completions}
+      - VICW_LLM_MODEL_NAME=${VICW_LLM_MODEL_NAME:-mistralai/mistral-7b-instruct}
+      
+      # Redis Configuration
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      
+      # Qdrant Configuration
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      
+      # Neo4j Configuration
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-vicw_password}
+      
+      # Context Configuration
+      - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-4096}
+      - OFFLOAD_THRESHOLD=${OFFLOAD_THRESHOLD:-0.80}
+      
+      # Thread Configuration
+      - OMP_NUM_THREADS=2
+      - MKL_NUM_THREADS=2
+      - OPENBLAS_NUM_THREADS=2
+      - NUMEXPR_NUM_THREADS=2
+      
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+      - ./system_prompt.txt:/app/system_prompt.txt:ro
+    restart: unless-stopped
+    networks:
+      - vicw_network
+
+  # Redis - Chunk Storage
+  redis:
+    image: redis:7-alpine
+    container_name: vicw_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - vicw_network
+
+  # Qdrant - Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: vicw_qdrant
+    ports:
+      - "6333:6333"  # REST API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - vicw_network
+
+  # Neo4j - Knowledge Graph
+  neo4j:
+    image: neo4j:5-community
+    container_name: vicw_neo4j
+    ports:
+      - "7474:7474"  # HTTP
+      - "7687:7687"  # Bolt
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-vicw_password}
+      - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
+      - NEO4J_dbms_memory_pagecache_size=512M
+      - NEO4J_dbms_memory_heap_initial__size=512M
+      - NEO4J_dbms_memory_heap_max__size=1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "${NEO4J_PASSWORD:-vicw_password}", "RETURN 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - vicw_network
+
+volumes:
+  redis_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+
+networks:
+  vicw_network:
+    driver: bridge
