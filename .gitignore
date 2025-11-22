@@ -65,6 +65,6 @@ htmlcov/
 .ipynb_checkpoints
 
 # Model cache
-models/
+models/*
 .cache/
 CLAUDE.md
