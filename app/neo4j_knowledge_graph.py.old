@@ -71,6 +71,7 @@ class Neo4jKnowledgeGraph:
     async def update_chunk_node(self, job_id: str, summary: str, token_count: int) -> None:
         """
         COLD PATH: Create/update a Chunk node with metadata.
+        In a production system, you would parse the summary to extract entities and relationships.
         """
         cql_query = """
         MERGE (c:Chunk {job_id: $job_id})
@@ -82,14 +83,11 @@ class Neo4jKnowledgeGraph:
         
         async with self._driver.session() as session:
             try:
-                # FIXED: Passed parameters as a dictionary
                 await session.run(
                     cql_query,
-                    parameters={
-                        "job_id": job_id,
-                        "summary": summary,
-                        "token_count": token_count
-                    }
+                    job_id=job_id,
+                    summary=summary,
+                    token_count=token_count
                 )
                 logger.debug(f"Updated Neo4j chunk node for job_id={job_id}")
             except Exception as e:
@@ -98,15 +96,22 @@ class Neo4jKnowledgeGraph:
     async def update_graph_from_context(self, job_id: str, summary: str) -> None:
         """
         COLD PATH: Extract entities and relationships from summary and update graph.
+        This is a simplified implementation. In production, you would use NLP or LLM
+        to extract structured information.
         """
         async with self._driver.session() as session:
             try:
-                # FIXED: Passed parameters as a dictionary
+                # For now, just create a chunk node
+                # In production, you would:
+                # 1. Parse summary for entities (using spaCy or LLM)
+                # 2. Extract relationships
+                # 3. Create entity nodes and relationship edges
+                
                 await session.run("""
                     MERGE (c:Chunk {job_id: $job_id})
                     SET c.summary = $summary,
                         c.created_at = timestamp()
-                """, parameters={"job_id": job_id, "summary": summary})
+                """, job_id=job_id, summary=summary)
                 
                 logger.debug(f"Updated knowledge graph for job_id={job_id}")
                 
@@ -127,8 +132,7 @@ class Neo4jKnowledgeGraph:
                 
                 cql = f"MERGE (e:Entity {{name: $name}}) SET {prop_str}"
                 
-                # FIXED: props is already a dictionary, passed to parameters
-                await session.run(cql, parameters=props)
+                await session.run(cql, **props)
                 logger.debug(f"Created/updated entity: {name} ({entity_type})")
                 
             except Exception as e:
@@ -154,14 +158,11 @@ class Neo4jKnowledgeGraph:
                 SET r += $props
                 """
                 
-                # FIXED: Explicit parameters dictionary
                 await session.run(
                     cql,
-                    parameters={
-                        "from_entity": from_entity,
-                        "to_entity": to_entity,
-                        "props": props
-                    }
+                    from_entity=from_entity,
+                    to_entity=to_entity,
+                    props=props
                 )
                 logger.debug(f"Created relationship: ({from_entity})-[:{relationship_type}]->({to_entity})")
                 
@@ -186,14 +187,7 @@ class Neo4jKnowledgeGraph:
         
         async with self._driver.session() as session:
             try:
-                # --- CRITICAL FIX HERE ---
-                # Previously: await session.run(cql_query, query=query_text, limit=limit)
-                # The argument name "query" collided with the driver's first argument.
-                # We now pass parameters explicitly as a dictionary.
-                result = await session.run(
-                    cql_query, 
-                    parameters={"query": query_text, "limit": limit}
-                )
+                result = await session.run(cql_query, query=query_text, limit=limit)
                 
                 structured_data = []
                 async for record in result:
@@ -226,8 +220,7 @@ class Neo4jKnowledgeGraph:
         
         async with self._driver.session() as session:
             try:
-                # FIXED: Explicit parameters
-                result = await session.run(cql_query, parameters={"entity_name": entity_name})
+                result = await session.run(cql_query, entity_name=entity_name)
                 record = await result.single()
                 
                 if record:

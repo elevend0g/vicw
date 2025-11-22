@@ -1,5 +1,6 @@
 """Semantic manager for cold path processing"""
 
+import uuid
 import logging
 import time
 import asyncio

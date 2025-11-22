@@ -1,5 +1,6 @@
 """Qdrant-based vector search implementation"""
 
+import uuid
 import logging
 import asyncio
 from typing import List, Dict, Any, Optional
@@ -73,18 +74,25 @@ class QdrantVectorDB:
         if not self.client:
             raise RuntimeError("Qdrant client not initialized")
         
+        # 1. Generate a valid UUID for Qdrant (Fixes the "Format error")
+        point_id = str(uuid.uuid4())
+
+        # 2. Inject the original job_id into metadata for traceability
+        metadata["_job_id"] = job_id
+
         def sync_upsert():
             point = PointStruct(
-                id=job_id,
+                id=point_id,       # <--- Uses the valid UUID
                 vector=embedding,
-                payload=metadata
+                payload=metadata   # <--- Contains the original job_id
             )
             self.client.upsert(
                 collection_name=self.collection_name,
                 wait=True,
                 points=[point]
             )
-        
+            
+        # Ensure you are calling this via asyncio.to_thread if wrapping sync code
         await asyncio.to_thread(sync_upsert)
         logger.debug(f"Upserted vector for job_id={job_id} in Qdrant")
     

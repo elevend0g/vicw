@@ -102,13 +102,20 @@ class ContextManager:
         # Extract messages until we've removed enough tokens
         # Never extract pinned header or system messages
         while extracted_tokens < tokens_to_extract and len(self.working_context) > 1:
-            # Skip if first message is system message or pinned
-            if self.working_context[0]['role'] == 'system':
+            # Find the first non-system message to extract (skip placeholders)
+            idx = 0
+            while idx < len(self.working_context) and self.working_context[idx]['role'] == 'system':
+                idx += 1
+
+            # If all remaining messages are system messages, we can't extract more
+            if idx >= len(self.working_context):
+                logger.warning("Cannot extract more: only system messages remain")
                 break
-            
-            msg = self.working_context.pop(0)
+
+            # Extract the message at index idx
+            msg = self.working_context.pop(idx)
             extracted_messages.append(msg)
-            
+
             msg_text = f"{msg['role']}: {msg['content']}"
             extracted_tokens += self._estimate_tokens(msg_text)
         
