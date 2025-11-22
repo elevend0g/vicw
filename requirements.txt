@@ -9,7 +9,7 @@ httpx==0.25.2
 
 # Database clients
 redis[hiredis]==5.0.1
-qdrant-client==1.7.0
+qdrant-client==1.9.1
 neo4j==5.14.1
 
 # ML/NLP

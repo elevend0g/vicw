@@ -9,6 +9,9 @@ services:
     container_name: vicw_api
     ports:
       - "8000:8000"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     environment:
       # LLM Configuration
       - VICW_LLM_API_KEY=${VICW_LLM_API_KEY}
