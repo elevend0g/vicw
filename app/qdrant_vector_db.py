@@ -114,15 +114,19 @@ class QdrantVectorDB:
             )
         
         search_results = await asyncio.to_thread(sync_search)
-        
+
         results = []
         for hit in search_results:
+            # Extract the original job_id from payload (stored as _job_id during upsert)
+            payload = hit.payload or {}
+            job_id = payload.get("_job_id", str(hit.id))  # Fallback to UUID if _job_id missing
+
             results.append({
-                "job_id": str(hit.id),
+                "job_id": job_id,
                 "score": hit.score,
-                "payload": hit.payload or {}
+                "payload": payload
             })
-        
+
         return results
     
     async def get_vector(self, job_id: str) -> Optional[Dict]:
