@@ -20,8 +20,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY *.py ./
-COPY system_prompt.txt . 2>/dev/null || true
+COPY app/*.py ./
+COPY system_prompt.txt .
 
 # Create directory for logs
 RUN mkdir -p /app/logs
