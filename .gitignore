@@ -67,3 +67,4 @@ htmlcov/
 # Model cache
 models/
 .cache/
+CLAUDE.md
