@@ -153,3 +153,31 @@ class RAGResult:
             "role": "system",
             "content": "\n".join(content_parts)
         }
+
+
+@dataclass
+class State:
+    """Minimal state tracking for loop prevention"""
+    id: str
+    type: str  # goal/task/decision/fact
+    desc: str
+    status: str  # active/completed/invalid
+    created: float
+    updated: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return asdict(self)
+
+    @classmethod
+    def create(cls, state_type: str, description: str, status: str = "active"):
+        """Factory method to create a new state"""
+        now = time.time()
+        return cls(
+            id=f"state_{uuid.uuid4().hex}",
+            type=state_type,
+            desc=description,
+            status=status,
+            created=now,
+            updated=now
+        )

@@ -1,0 +1,65 @@
+# VICW State Machine Configuration
+# Simple patterns for detecting and tracking state changes across domains
+
+state_types:
+  goal:
+    create:
+      - "let's"
+      - "we should"
+      - "we need to"
+      - "our objective"
+      - "heading to"
+      - "plan to"
+      - "going to"
+    complete:
+      - "arrived"
+      - "reached"
+      - "goal achieved"
+      - "done"
+      - "completed"
+      - "finished"
+
+  task:
+    create:
+      - "working on"
+      - "implementing"
+      - "building"
+      - "fixing"
+      - "adding"
+      - "creating"
+      - "developing"
+    complete:
+      - "completed"
+      - "merged"
+      - "finished"
+      - "deployed"
+      - "fixed"
+      - "done"
+
+  decision:
+    create:
+      - "we decided"
+      - "we chose"
+      - "we'll go with"
+      - "final choice"
+      - "decided on"
+      - "choosing"
+    complete:
+      - "locked in"
+      - "final decision"
+      - "confirmed"
+
+  fact:
+    create:
+      - "it turns out"
+      - "we discovered"
+      - "we found that"
+      - "it's known that"
+      - "confirmed that"
+      - "discovered that"
+    invalidate:
+      - "actually that's wrong"
+      - "correction"
+      - "revising that"
+      - "turns out that's not"
+      - "actually"
