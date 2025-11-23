@@ -111,17 +111,88 @@ class Neo4jKnowledgeGraph:
         """
         async with self._driver.session() as session:
             try:
-                # FIXED: Passed parameters as a dictionary
+                # Create/update the Chunk node
                 await session.run("""
                     MERGE (c:Chunk {job_id: $job_id})
                     SET c.summary = $summary,
                         c.created_at = timestamp()
                 """, parameters={"job_id": job_id, "summary": summary})
-                
-                logger.debug(f"Updated knowledge graph for job_id={job_id}")
-                
+
+                # Extract entities using simple rule-based approach
+                entities = self._extract_entities(summary)
+
+                # Create Entity nodes and relationships to the Chunk
+                for entity_name, entity_type in entities:
+                    # Create/update entity node
+                    await session.run("""
+                        MERGE (e:Entity {name: $name})
+                        SET e.type = $type,
+                            e.updated_at = timestamp()
+                    """, parameters={"name": entity_name, "type": entity_type})
+
+                    # Create relationship from Chunk to Entity
+                    await session.run("""
+                        MATCH (c:Chunk {job_id: $job_id})
+                        MATCH (e:Entity {name: $name})
+                        MERGE (c)-[:MENTIONS]->(e)
+                    """, parameters={"job_id": job_id, "name": entity_name})
+
+                # Create relationships between entities mentioned together
+                if len(entities) > 1:
+                    for i in range(len(entities) - 1):
+                        for j in range(i + 1, len(entities)):
+                            await session.run("""
+                                MATCH (e1:Entity {name: $name1})
+                                MATCH (e2:Entity {name: $name2})
+                                MERGE (e1)-[:RELATED_TO]-(e2)
+                            """, parameters={"name1": entities[i][0], "name2": entities[j][0]})
+
+                if entities:
+                    logger.debug(f"Updated knowledge graph for job_id={job_id} with {len(entities)} entities")
+                else:
+                    logger.debug(f"Updated knowledge graph for job_id={job_id} (no entities extracted)")
+
             except Exception as e:
                 logger.error(f"Error updating knowledge graph for {job_id}: {e}")
+
+    def _extract_entities(self, text: str) -> List[tuple]:
+        """
+        Simple rule-based entity extraction.
+        Returns list of (entity_name, entity_type) tuples.
+        """
+        import re
+
+        entities = []
+
+        # Extract capitalized phrases (2-4 words) as potential entities
+        # Matches patterns like "John Smith", "New York City", etc.
+        pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3})\b'
+        matches = re.findall(pattern, text)
+
+        # Deduplicate and filter common words
+        common_words = {'The', 'This', 'That', 'These', 'Those', 'When', 'Where', 'What', 'Why', 'How', 'Who'}
+        seen = set()
+
+        for match in matches:
+            # Skip if starts with common word or already seen
+            if match.split()[0] in common_words or match in seen:
+                continue
+
+            seen.add(match)
+
+            # Simple type inference based on context
+            entity_type = "UNKNOWN"
+            if any(word in text.lower() for word in ['goal', 'objective', 'aim']):
+                entity_type = "GOAL"
+            elif any(word in text.lower() for word in ['task', 'action', 'do', 'implement']):
+                entity_type = "TASK"
+            elif any(word in text.lower() for word in ['fact', 'is', 'are', 'was', 'were']):
+                entity_type = "FACT"
+
+            entities.append((match, entity_type))
+
+        # Limit to top 10 entities per chunk to avoid overload
+        return entities[:10]
     
     async def create_entity(self, name: str, entity_type: str, properties: Dict[str, Any] = None) -> None:
         """Create or update an entity node"""
@@ -183,45 +254,70 @@ class Neo4jKnowledgeGraph:
         HOT PATH: Query the graph for relevant relationships.
         Returns formatted relationship strings for context injection.
         """
-        # Simple query that searches for entities and their relationships
-        cql_query = """
-        MATCH (n)-[r]->(m)
-        WHERE n.name CONTAINS $query 
-           OR m.name CONTAINS $query 
-           OR n.summary CONTAINS $query
-           OR m.summary CONTAINS $query
-        RETURN n, type(r) AS relationship, m
-        LIMIT $limit
-        """
-        
+        # Extract potential keywords from query (capitalized words)
+        import re
+        keywords = re.findall(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', query_text)
+
+        # Also include significant lowercase words
+        significant_words = [word for word in query_text.split()
+                           if len(word) > 3 and word.lower() not in
+                           {'about', 'tell', 'what', 'when', 'where', 'how', 'why', 'who', 'the', 'this', 'that'}]
+
+        # Combine keywords and significant words
+        search_terms = keywords + significant_words
+
+        if not search_terms:
+            # Fallback to using the whole query if no keywords extracted
+            search_terms = [query_text]
+
         async with self._driver.session() as session:
             try:
-                # --- CRITICAL FIX HERE ---
-                # Previously: await session.run(cql_query, query=query_text, limit=limit)
-                # The argument name "query" collided with the driver's first argument.
-                # We now pass parameters explicitly as a dictionary.
-                result = await session.run(
-                    cql_query, 
-                    parameters={"query": query_text, "limit": limit}
-                )
-                
-                structured_data = []
-                async for record in result:
-                    # Extract node names
-                    n = record['n']
-                    m = record['m']
-                    r_type = record['relationship']
-                    
-                    # Get node names or labels
-                    n_name = n.get('name', list(n.labels)[0] if n.labels else 'Node')
-                    m_name = m.get('name', list(m.labels)[0] if m.labels else 'Node')
-                    
-                    # Format as relationship triple
-                    structured_data.append(f"({n_name})-[:{r_type}]->({m_name})")
-                
-                logger.debug(f"Relational query returned {len(structured_data)} facts")
+                all_results = []
+
+                # Search for each term
+                for term in search_terms[:3]:  # Limit to first 3 terms to avoid too many queries
+                    cql_query = """
+                    MATCH (n)-[r]->(m)
+                    WHERE toLower(coalesce(n.name, '')) CONTAINS toLower($query)
+                       OR toLower(coalesce(m.name, '')) CONTAINS toLower($query)
+                       OR toLower(coalesce(n.summary, '')) CONTAINS toLower($query)
+                       OR toLower(coalesce(m.summary, '')) CONTAINS toLower($query)
+                    RETURN n, type(r) AS relationship, m
+                    LIMIT $limit
+                    """
+
+                    result = await session.run(
+                        cql_query,
+                        parameters={"query": term, "limit": limit}
+                    )
+
+                    async for record in result:
+                        # Extract node names
+                        n = record['n']
+                        m = record['m']
+                        r_type = record['relationship']
+
+                        # Get node names or labels
+                        n_name = n.get('name', n.get('summary', list(n.labels)[0] if n.labels else 'Node'))
+                        m_name = m.get('name', m.get('summary', list(m.labels)[0] if m.labels else 'Node'))
+
+                        # Truncate long summaries
+                        if len(n_name) > 50:
+                            n_name = n_name[:47] + "..."
+                        if len(m_name) > 50:
+                            m_name = m_name[:47] + "..."
+
+                        # Format as relationship triple
+                        fact = f"({n_name})-[:{r_type}]->({m_name})"
+                        if fact not in all_results:  # Avoid duplicates
+                            all_results.append(fact)
+
+                # Limit total results
+                structured_data = all_results[:limit]
+
+                logger.info(f"Relational query for '{query_text}' (terms: {search_terms[:3]}) returned {len(structured_data)} facts")
                 return structured_data
-                
+
             except Exception as e:
                 logger.error(f"Error in relational query: {e}")
                 return []

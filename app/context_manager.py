@@ -213,23 +213,30 @@ class ContextManager:
         """
         Performs semantic (Qdrant/Redis) and relational (Neo4j) search and injects results.
         Returns total number of items injected.
-        
+
         This is called during generation to enhance context with relevant memories.
         """
         if not self.semantic_manager:
             logger.warning("No semantic manager available for RAG")
             return 0
-        
+
         rag_start_time = time.time()
-        
+
         try:
+            # 0. Remove previous RAG/state system messages to prevent accumulation
+            # Keep only user/assistant messages and placeholders
+            self.working_context = [
+                msg for msg in self.working_context
+                if msg['role'] != 'system' or msg['content'].startswith('[ARCHIVED mem_id:')
+            ]
+
             # 1. Generate embedding for query
             query_embedding = await self.semantic_manager.generate_embedding(query_text)
-            
+
             if not query_embedding:
                 logger.warning("Failed to generate query embedding for RAG")
                 return 0
-            
+
             # 2. Query memory systems (hybrid retrieval)
             rag_result = await self.semantic_manager.query_memory(
                 query_embedding,
@@ -237,26 +244,26 @@ class ContextManager:
                 top_k_semantic=top_k_semantic,
                 top_k_relational=top_k_relational
             )
-            
+
             if rag_result.is_empty():
                 logger.info("RAG skipped: No relevant memories found")
                 return 0
-            
+
             # 3. Convert to context message and inject
             rag_message = rag_result.to_context_message()
-            
+
             if rag_message:
                 # Inject before the last user message if possible
                 if self.working_context and self.working_context[-1]['role'] == 'user':
                     self.working_context.insert(-1, rag_message)
                 else:
                     self.working_context.append(rag_message)
-                
+
                 rag_time = (time.time() - rag_start_time) * 1000
                 logger.info(
                     f"RAG complete: Injected {rag_result.total_items} items in {rag_time:.2f}ms"
                 )
-                
+
                 metrics_logger.info(
                     f"RAG_INJECTION | "
                     f"semantic={len(rag_result.semantic_chunks)} | "
