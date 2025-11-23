@@ -83,6 +83,7 @@ ECHO_GUARD_ENABLED = os.getenv('ECHO_GUARD_ENABLED', 'true').lower() == 'true'
 ECHO_SIMILARITY_THRESHOLD = float(os.getenv('ECHO_SIMILARITY_THRESHOLD', '0.95'))  # Cosine similarity threshold
 ECHO_RESPONSE_HISTORY_SIZE = int(os.getenv('ECHO_RESPONSE_HISTORY_SIZE', '10'))  # Number of recent responses to compare
 MAX_REGENERATION_ATTEMPTS = int(os.getenv('MAX_REGENERATION_ATTEMPTS', '3'))  # Max retries on duplicate detection
+ECHO_STRIP_CONTEXT_ON_RETRY = int(os.getenv('ECHO_STRIP_CONTEXT_ON_RETRY', '3'))  # Which retry to strip RAG context (1-3, default: 3)
 
 
 def apply_thread_config():

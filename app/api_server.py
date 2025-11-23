@@ -36,7 +36,8 @@ from config import (
     EMBEDDING_MODEL_NAME,
     ECHO_GUARD_ENABLED,
     ECHO_SIMILARITY_THRESHOLD,
-    MAX_REGENERATION_ATTEMPTS
+    MAX_REGENERATION_ATTEMPTS,
+    ECHO_STRIP_CONTEXT_ON_RETRY
 )
 
 apply_thread_config()
@@ -247,6 +248,34 @@ async def chat(request: ChatRequest):
                 logger.error(f"LLM generation timeout after {LLM_TIMEOUT}s")
                 raise HTTPException(status_code=504, detail="LLM generation timeout")
 
+            # Handle empty/whitespace-only responses (failure mode)
+            if not current_response or not current_response.strip():
+                regeneration_count += 1
+                logger.error(
+                    f"LLM generated empty response (attempt {regeneration_count}/{MAX_REGENERATION_ATTEMPTS})"
+                )
+
+                if regeneration_count < MAX_REGENERATION_ATTEMPTS:
+                    from data_models import Message
+                    empty_warning = Message(
+                        role="system",
+                        content=(
+                            "⚠️ ERROR: You generated an empty response.\n\n"
+                            "You MUST provide a substantive response. Options:\n"
+                            "1. Answer the user's question with available information\n"
+                            "2. State clearly: 'I don't have enough information to answer this'\n"
+                            "3. Ask for clarification if the request is unclear\n\n"
+                            "Empty responses are not acceptable. Respond now with actual content."
+                        )
+                    )
+                    context_window.append(empty_warning.to_dict())
+                    continue
+                else:
+                    # Max retries with empty responses
+                    logger.error("Max retries reached with empty responses, returning error message")
+                    response_text = "[ERROR] The LLM failed to generate a response after multiple attempts. Please rephrase your question or try again."
+                    break
+
             # Check for echo (duplicate response) if enabled
             if ECHO_GUARD_ENABLED and context_manager.semantic_manager:
                 # Generate embedding for response
@@ -263,24 +292,94 @@ async def chat(request: ChatRequest):
                         regeneration_count += 1
                         logger.warning(
                             f"Echo detected (attempt {regeneration_count}/{MAX_REGENERATION_ATTEMPTS}): "
-                            f"similarity={similarity:.4f}"
+                            f"similarity={similarity:.4f}, response_length={len(current_response)}"
+                        )
+
+                        # Log metrics for monitoring
+                        metrics_logger = logging.getLogger('vicw.metrics')
+                        metrics_logger.info(
+                            f"ECHO_GUARD_RETRY | attempt={regeneration_count} | "
+                            f"similarity={similarity:.4f} | response_len={len(current_response)}"
                         )
 
                         if regeneration_count < MAX_REGENERATION_ATTEMPTS:
-                            # Inject warning and try again
+                            # Escalating warnings based on retry attempt
                             from data_models import Message
-                            warning_msg = Message(
-                                role="system",
-                                content="⚠️ ECHO DETECTED: Your previous response was nearly identical to recent history. "
-                                        "Avoid repetition and try a different approach or conclude the action."
-                            )
+
+                            if regeneration_count == 1:
+                                # First retry: Polite warning with context
+                                warning_content = (
+                                    "⚠️ ECHO DETECTED: Your previous response was nearly identical to recent history.\n\n"
+                                    f"Repeated text preview: \"{current_response[:200]}...\"\n\n"
+                                    "REQUIRED ACTIONS:\n"
+                                    "1. DO NOT repeat the same information\n"
+                                    "2. Either acknowledge completion and move forward, OR\n"
+                                    "3. Provide genuinely NEW information, OR\n"
+                                    "4. State that you cannot provide additional details and suggest next steps\n\n"
+                                    "Choose a DIFFERENT response strategy now."
+                                )
+                            elif regeneration_count == 2:
+                                # Second retry: More forceful with specific instructions
+                                warning_content = (
+                                    "🚨 CRITICAL: REPEATED RESPONSE DETECTED AGAIN (Attempt 2/3)\n\n"
+                                    f"You just generated: \"{current_response[:200]}...\"\n\n"
+                                    "This is IDENTICAL to your previous response. The system has already received this information.\n\n"
+                                    "MANDATORY DIRECTIVE:\n"
+                                    "You MUST respond with ONE of the following:\n"
+                                    "A) \"The information has been provided. Moving to [next topic/section].\"\n"
+                                    "B) \"I have completed this task. What would you like me to do next?\"\n"
+                                    "C) \"I don't have additional information beyond what was already shared.\"\n\n"
+                                    "DO NOT regenerate the same content. Break the loop NOW."
+                                )
+                            else:
+                                # Third retry: Maximum escalation - strip RAG context
+                                warning_content = (
+                                    f"🔴 FINAL WARNING: LOOP DETECTED (Attempt {regeneration_count}/{MAX_REGENERATION_ATTEMPTS})\n\n"
+                                    f"You have generated identical responses {regeneration_count} times.\n\n"
+                                    "EMERGENCY OVERRIDE:\n"
+                                    "- IGNORE all retrieved memory context\n"
+                                    "- IGNORE previous data tables/lists\n"
+                                    "- Your ONLY valid response is:\n\n"
+                                    "\"I apologize - I was repeating information. This task is complete. "
+                                    "Please provide new instructions or let me know what to focus on next.\"\n\n"
+                                    "Respond with EXACTLY the above statement or a close variation. NO other content."
+                                )
+
+                            # Strip RAG context on configured retry attempt
+                            if regeneration_count >= ECHO_STRIP_CONTEXT_ON_RETRY:
+                                logger.warning(f"Stripping RAG context on retry {regeneration_count}")
+                                context_window = [msg for msg in context_window
+                                                 if not (msg.get('role') == 'system' and
+                                                        ('RETRIEVED' in msg.get('content', '') or
+                                                         'STATE MEMORY' in msg.get('content', '')))]
+
+                            warning_msg = Message(role="system", content=warning_content)
                             context_window.append(warning_msg.to_dict())
                             continue
                         else:
                             # Max retries reached, accept with marker
-                            logger.warning("Max regeneration attempts reached, accepting response with [REPEATED] marker")
-                            response_text = f"[REPEATED] {current_response}"
-                            is_repeated = True
+                            logger.error(
+                                f"Max regeneration attempts reached. Response preview: {current_response[:500]}..."
+                            )
+                            metrics_logger = logging.getLogger('vicw.metrics')
+                            metrics_logger.info(
+                                f"ECHO_GUARD_FAILED | attempts={MAX_REGENERATION_ATTEMPTS} | "
+                                f"final_similarity={similarity:.4f} | response_len={len(current_response)}"
+                            )
+
+                            # If response is empty or very short, provide helpful fallback
+                            if len(current_response.strip()) < 10:
+                                response_text = (
+                                    "[SYSTEM INTERVENTION] The LLM entered a repetition loop and could not generate "
+                                    "a valid response after multiple attempts. This indicates the current context may "
+                                    "be constraining the model. Please:\n"
+                                    "1. Rephrase your question\n"
+                                    "2. Ask about a different topic\n"
+                                    "3. Use /reset to clear context if the issue persists"
+                                )
+                            else:
+                                response_text = f"[REPEATED] {current_response}"
+                                is_repeated = True
                             break
                     else:
                         # Not a duplicate, accept response
