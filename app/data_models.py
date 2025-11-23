@@ -157,13 +157,15 @@ class RAGResult:
 
 @dataclass
 class State:
-    """Minimal state tracking for loop prevention"""
+    """Minimal state tracking for loop prevention with boredom detection"""
     id: str
     type: str  # goal/task/decision/fact
     desc: str
     status: str  # active/completed/invalid
     created: float
     updated: float
+    visit_count: int = 0  # Tracks how many times state was injected into context
+    last_visited: float = 0.0  # Timestamp of last visit (injection)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -179,5 +181,7 @@ class State:
             desc=description,
             status=status,
             created=now,
-            updated=now
+            updated=now,
+            visit_count=0,
+            last_visited=0.0
         )

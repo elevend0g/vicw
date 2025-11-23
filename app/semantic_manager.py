@@ -293,7 +293,110 @@ class SemanticManager:
             )
             
             return result
-            
+
         except Exception as e:
             logger.error(f"Error in hybrid retrieval: {e}")
             return RAGResult()
+
+    async def store_response_embedding(self, embedding: List[float]) -> bool:
+        """
+        Store response embedding in Redis for echo detection.
+        Uses sorted set with timestamp scores for sliding window.
+        Returns True if successful.
+        """
+        try:
+            from config import ECHO_RESPONSE_HISTORY_SIZE
+            import json
+
+            # Generate unique ID for this response
+            response_id = f"resp_{uuid.uuid4().hex[:8]}"
+            timestamp = time.time()
+
+            # Store embedding in Redis sorted set
+            key = "response_embeddings"
+            value = json.dumps(embedding)
+
+            # Add to sorted set with timestamp as score
+            await self.redis_storage.redis.zadd(key, {value: timestamp})
+
+            # Trim to keep only recent responses
+            # Keep the most recent N responses (highest scores)
+            await self.redis_storage.redis.zremrangebyrank(
+                key,
+                0,
+                -(ECHO_RESPONSE_HISTORY_SIZE + 1)
+            )
+
+            logger.debug(f"Stored response embedding with timestamp {timestamp}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error storing response embedding: {e}")
+            return False
+
+    async def check_response_similarity(
+        self,
+        new_embedding: List[float],
+        threshold: float = None
+    ) -> tuple[bool, float]:
+        """
+        Check if new response embedding is similar to recent responses.
+        Returns (is_duplicate, max_similarity).
+        """
+        try:
+            from config import ECHO_SIMILARITY_THRESHOLD
+            import json
+
+            if threshold is None:
+                threshold = ECHO_SIMILARITY_THRESHOLD
+
+            # Get recent response embeddings from Redis
+            key = "response_embeddings"
+            recent_responses = await self.redis_storage.redis.zrange(
+                key,
+                0,
+                -1,
+                withscores=False
+            )
+
+            if not recent_responses:
+                logger.debug("No previous responses to compare")
+                return (False, 0.0)
+
+            # Compute cosine similarity with each stored embedding
+            new_emb_array = np.array(new_embedding)
+            max_similarity = 0.0
+
+            for stored_response in recent_responses:
+                try:
+                    stored_emb = json.loads(stored_response)
+                    stored_emb_array = np.array(stored_emb)
+
+                    # Cosine similarity
+                    dot_product = np.dot(new_emb_array, stored_emb_array)
+                    norm_new = np.linalg.norm(new_emb_array)
+                    norm_stored = np.linalg.norm(stored_emb_array)
+
+                    if norm_new > 0 and norm_stored > 0:
+                        similarity = dot_product / (norm_new * norm_stored)
+                        max_similarity = max(max_similarity, similarity)
+
+                        if similarity >= threshold:
+                            logger.warning(
+                                f"ECHO_DETECTED | similarity={similarity:.4f} | threshold={threshold}"
+                            )
+                            metrics_logger.info(
+                                f"ECHO_DETECTED | similarity={similarity:.4f} | threshold={threshold}"
+                            )
+                            return (True, float(similarity))
+
+                except (json.JSONDecodeError, ValueError) as e:
+                    logger.warning(f"Error parsing stored embedding: {e}")
+                    continue
+
+            logger.debug(f"Max similarity: {max_similarity:.4f} (threshold: {threshold})")
+            return (False, float(max_similarity))
+
+        except Exception as e:
+            logger.error(f"Error checking response similarity: {e}")
+            return (False, 0.0)

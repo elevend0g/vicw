@@ -33,7 +33,10 @@ from config import (
     EXTERNAL_API_KEY,
     EXTERNAL_MODEL_NAME,
     LLM_TIMEOUT,
-    EMBEDDING_MODEL_NAME
+    EMBEDDING_MODEL_NAME,
+    ECHO_GUARD_ENABLED,
+    ECHO_SIMILARITY_THRESHOLD,
+    MAX_REGENERATION_ATTEMPTS
 )
 
 apply_thread_config()
@@ -223,24 +226,84 @@ async def chat(request: ChatRequest):
         # Pause cold path during LLM generation to avoid resource contention
         if cold_path_worker:
             await cold_path_worker.pause()
-        
+
         # Get context window
         context_window = context_manager.get_context_window()
-        
-        # Generate response with timeout
-        try:
-            response_text = await asyncio.wait_for(
-                llm.generate(context_window),
-                timeout=LLM_TIMEOUT
-            )
-        except asyncio.TimeoutError:
-            logger.error(f"LLM generation timeout after {LLM_TIMEOUT}s")
-            raise HTTPException(status_code=504, detail="LLM generation timeout")
-        
+
+        # Echo Guard: Generate response with duplicate detection and regeneration
+        response_text = None
+        response_embedding = None
+        regeneration_count = 0
+        is_repeated = False
+
+        while regeneration_count < MAX_REGENERATION_ATTEMPTS:
+            # Generate response with timeout
+            try:
+                current_response = await asyncio.wait_for(
+                    llm.generate(context_window),
+                    timeout=LLM_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"LLM generation timeout after {LLM_TIMEOUT}s")
+                raise HTTPException(status_code=504, detail="LLM generation timeout")
+
+            # Check for echo (duplicate response) if enabled
+            if ECHO_GUARD_ENABLED and context_manager.semantic_manager:
+                # Generate embedding for response
+                response_embedding = await context_manager.semantic_manager.generate_embedding(current_response)
+
+                if response_embedding:
+                    # Check similarity with recent responses
+                    is_duplicate, similarity = await context_manager.semantic_manager.check_response_similarity(
+                        response_embedding,
+                        threshold=ECHO_SIMILARITY_THRESHOLD
+                    )
+
+                    if is_duplicate:
+                        regeneration_count += 1
+                        logger.warning(
+                            f"Echo detected (attempt {regeneration_count}/{MAX_REGENERATION_ATTEMPTS}): "
+                            f"similarity={similarity:.4f}"
+                        )
+
+                        if regeneration_count < MAX_REGENERATION_ATTEMPTS:
+                            # Inject warning and try again
+                            from data_models import Message
+                            warning_msg = Message(
+                                role="system",
+                                content="⚠️ ECHO DETECTED: Your previous response was nearly identical to recent history. "
+                                        "Avoid repetition and try a different approach or conclude the action."
+                            )
+                            context_window.append(warning_msg.to_dict())
+                            continue
+                        else:
+                            # Max retries reached, accept with marker
+                            logger.warning("Max regeneration attempts reached, accepting response with [REPEATED] marker")
+                            response_text = f"[REPEATED] {current_response}"
+                            is_repeated = True
+                            break
+                    else:
+                        # Not a duplicate, accept response
+                        response_text = current_response
+                        break
+                else:
+                    # Failed to generate embedding, accept response without check
+                    logger.warning("Failed to generate response embedding, skipping echo detection")
+                    response_text = current_response
+                    break
+            else:
+                # Echo guard disabled, accept response
+                response_text = current_response
+                break
+
+        # Store response embedding for future comparisons
+        if ECHO_GUARD_ENABLED and response_embedding and context_manager.semantic_manager:
+            await context_manager.semantic_manager.store_response_embedding(response_embedding)
+
         # Resume cold path
         if cold_path_worker:
             await cold_path_worker.resume()
-        
+
         # Add assistant response
         await context_manager.add_message("assistant", response_text)
         

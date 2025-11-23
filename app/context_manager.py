@@ -292,13 +292,19 @@ class ContextManager:
         """
         Build state tracking message from Neo4j.
         Queries for active and completed states with hard limits.
+        Tracks visit counts and detects boredom (repeated focus).
         """
         if not self.semantic_manager or not self.semantic_manager.neo4j_graph:
             return None
 
         try:
+            from config import BOREDOM_THRESHOLD, BOREDOM_DETECTION_ENABLED
+
             content_parts = ["[STATE MEMORY]"]
             total_states = 0
+            injected_state_ids = []
+            max_visit_count = 0
+            bored_states = []
 
             # Query each state type with configured limits
             for state_type, limit in STATE_INJECTION_LIMITS.items():
@@ -324,6 +330,16 @@ class ContextManager:
                     content_parts.append(f"{type_label}: {', '.join(descriptions)}")
                     total_states += len(active_states)
 
+                    # Track injected state IDs for visit counting
+                    for state in active_states:
+                        injected_state_ids.append(state['id'])
+                        visit_count = state.get('visit_count', 0)
+                        max_visit_count = max(max_visit_count, visit_count)
+
+                        # Detect boredom (threshold exceeded)
+                        if BOREDOM_DETECTION_ENABLED and visit_count >= BOREDOM_THRESHOLD:
+                            bored_states.append(state['desc'])
+
             # Get recently completed states (smaller limit)
             completed_goals = await self.semantic_manager.neo4j_graph.get_completed_states(
                 state_type='goal',
@@ -344,11 +360,22 @@ class ContextManager:
                 content_parts.append(f"Completed: {', '.join(completed_items)}")
                 total_states += len(completed_items)
 
+            # Inject boredom warning if detected
+            if bored_states:
+                content_parts.append("")
+                bored_desc = bored_states[0] if len(bored_states) == 1 else f"{len(bored_states)} states"
+                content_parts.append(f"⚠️ LOOP DETECTED: Repeated focus on [{bored_desc}]. Consider concluding or exploring alternatives.")
+                logger.info(f"BOREDOM_DETECTED | states={bored_states} | max_visit_count={max_visit_count}")
+
             # Add soft prevention note
             if total_states > 0:
                 content_parts.append("")
                 content_parts.append("Note: Avoid repeating completed actions or contradicting known facts.")
                 content_parts.append("[END STATE MEMORY]")
+
+                # Increment visit counts for injected states (hot path, async)
+                if injected_state_ids:
+                    await self.semantic_manager.neo4j_graph.increment_state_visits(injected_state_ids)
 
                 return {
                     "role": "system",

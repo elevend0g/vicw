@@ -73,6 +73,17 @@ STATE_INJECTION_LIMITS = {
     'fact': int(os.getenv('STATE_LIMIT_FACT', '3'))
 }
 
+# Boredom Detection Configuration (Loop Prevention)
+BOREDOM_DETECTION_ENABLED = os.getenv('BOREDOM_DETECTION_ENABLED', 'true').lower() == 'true'
+BOREDOM_THRESHOLD = int(os.getenv('BOREDOM_THRESHOLD', '5'))  # Visit count threshold
+BOREDOM_ALTERNATIVE_COUNT = int(os.getenv('BOREDOM_ALTERNATIVE_COUNT', '3'))  # Alternative suggestions
+
+# Echo Guard Configuration (Response Similarity Detection)
+ECHO_GUARD_ENABLED = os.getenv('ECHO_GUARD_ENABLED', 'true').lower() == 'true'
+ECHO_SIMILARITY_THRESHOLD = float(os.getenv('ECHO_SIMILARITY_THRESHOLD', '0.95'))  # Cosine similarity threshold
+ECHO_RESPONSE_HISTORY_SIZE = int(os.getenv('ECHO_RESPONSE_HISTORY_SIZE', '10'))  # Number of recent responses to compare
+MAX_REGENERATION_ATTEMPTS = int(os.getenv('MAX_REGENERATION_ATTEMPTS', '3'))  # Max retries on duplicate detection
+
 
 def apply_thread_config():
     """Apply thread configuration to environment variables before heavy imports"""

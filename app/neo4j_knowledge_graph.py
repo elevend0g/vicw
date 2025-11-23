@@ -69,11 +69,15 @@ class Neo4jKnowledgeGraph:
                 await session.run(
                     "CREATE INDEX state_type_status_idx IF NOT EXISTS FOR (s:State) ON (s.type, s.status)"
                 )
-                
+
+                await session.run(
+                    "CREATE INDEX state_visit_count_idx IF NOT EXISTS FOR (s:State) ON (s.visit_count)"
+                )
+
                 await session.run(
                     "CREATE INDEX chunk_timestamp_idx IF NOT EXISTS FOR (c:Chunk) ON (c.processed_at)"
                 )
-                
+
                 logger.info("Neo4j constraints and indexes initialized")
             except Exception as e:
                 logger.warning(f"Error creating constraints (may already exist): {e}")
@@ -365,7 +369,9 @@ class Neo4jKnowledgeGraph:
                         desc: $desc,
                         status: $status,
                         created: $created,
-                        updated: $updated
+                        updated: $updated,
+                        visit_count: $visit_count,
+                        last_visited: $last_visited
                     })
                 """, parameters={
                     "id": state.id,
@@ -373,7 +379,9 @@ class Neo4jKnowledgeGraph:
                     "desc": state.desc,
                     "status": state.status,
                     "created": int(state.created),
-                    "updated": int(state.updated)
+                    "updated": int(state.updated),
+                    "visit_count": state.visit_count,
+                    "last_visited": state.last_visited
                 })
                 logger.debug(f"Created state: {state_type}/{description} ({status})")
                 return state.id
@@ -411,7 +419,9 @@ class Neo4jKnowledgeGraph:
                         "desc": state_node.get("desc"),
                         "status": state_node.get("status"),
                         "created": state_node.get("created"),
-                        "updated": state_node.get("updated")
+                        "updated": state_node.get("updated"),
+                        "visit_count": state_node.get("visit_count", 0),
+                        "last_visited": state_node.get("last_visited", 0.0)
                     }
                 return None
             except Exception as e:
@@ -421,24 +431,28 @@ class Neo4jKnowledgeGraph:
     async def update_state_status(self, state_id: str, new_status: str) -> bool:
         """
         COLD PATH: Update the status of an existing state.
+        Resets visit_count to 0 (progress made = fresh start).
         Returns True if successful.
         """
+        import time
         async with self._driver.session() as session:
             try:
                 result = await session.run("""
                     MATCH (s:State {id: $state_id})
                     SET s.status = $new_status,
-                        s.updated = $updated
+                        s.updated = $updated,
+                        s.visit_count = 0,
+                        s.last_visited = 0.0
                     RETURN s
                 """, parameters={
                     "state_id": state_id,
                     "new_status": new_status,
-                    "updated": int(asyncio.get_event_loop().time())
+                    "updated": int(time.time())
                 })
 
                 record = await result.single()
                 if record:
-                    logger.debug(f"Updated state {state_id} to {new_status}")
+                    logger.debug(f"Updated state {state_id} to {new_status} (visit_count reset)")
                     return True
                 return False
             except Exception as e:
@@ -480,7 +494,9 @@ class Neo4jKnowledgeGraph:
                         "desc": state_node.get("desc"),
                         "status": state_node.get("status"),
                         "created": state_node.get("created"),
-                        "updated": state_node.get("updated")
+                        "updated": state_node.get("updated"),
+                        "visit_count": state_node.get("visit_count", 0),
+                        "last_visited": state_node.get("last_visited", 0.0)
                     })
 
                 logger.debug(f"Retrieved {len(states)} active states (type={state_type})")
@@ -524,7 +540,9 @@ class Neo4jKnowledgeGraph:
                         "desc": state_node.get("desc"),
                         "status": state_node.get("status"),
                         "created": state_node.get("created"),
-                        "updated": state_node.get("updated")
+                        "updated": state_node.get("updated"),
+                        "visit_count": state_node.get("visit_count", 0),
+                        "last_visited": state_node.get("last_visited", 0.0)
                     })
 
                 logger.debug(f"Retrieved {len(states)} completed states (type={state_type})")
@@ -532,6 +550,39 @@ class Neo4jKnowledgeGraph:
             except Exception as e:
                 logger.error(f"Error getting completed states: {e}")
                 return []
+
+    async def increment_state_visits(self, state_ids: List[str]) -> int:
+        """
+        HOT PATH: Increment visit_count for multiple states (batch update).
+        Called when states are injected into context.
+        Returns number of states successfully updated.
+        """
+        if not state_ids:
+            return 0
+
+        import time
+        async with self._driver.session() as session:
+            try:
+                result = await session.run("""
+                    UNWIND $state_ids AS state_id
+                    MATCH (s:State {id: state_id})
+                    SET s.visit_count = COALESCE(s.visit_count, 0) + 1,
+                        s.last_visited = $timestamp
+                    RETURN count(s) AS updated_count
+                """, parameters={
+                    "state_ids": state_ids,
+                    "timestamp": time.time()
+                })
+
+                record = await result.single()
+                count = record['updated_count'] if record else 0
+
+                if count > 0:
+                    logger.debug(f"Incremented visit_count for {count} states")
+                return count
+            except Exception as e:
+                logger.error(f"Error incrementing state visits: {e}")
+                return 0
 
     async def clear_graph(self) -> None:
         """Clear all nodes and relationships (use with caution!)"""

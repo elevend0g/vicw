@@ -34,7 +34,21 @@ services:
       # Context Configuration
       - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-4096}
       - OFFLOAD_THRESHOLD=${OFFLOAD_THRESHOLD:-0.80}
-      
+
+      # State Tracking Configuration
+      - STATE_TRACKING_ENABLED=${STATE_TRACKING_ENABLED:-true}
+
+      # Boredom Detection Configuration (Loop Prevention)
+      - BOREDOM_DETECTION_ENABLED=${BOREDOM_DETECTION_ENABLED:-true}
+      - BOREDOM_THRESHOLD=${BOREDOM_THRESHOLD:-5}
+      - BOREDOM_ALTERNATIVE_COUNT=${BOREDOM_ALTERNATIVE_COUNT:-3}
+
+      # Echo Guard Configuration (Response Similarity Detection)
+      - ECHO_GUARD_ENABLED=${ECHO_GUARD_ENABLED:-true}
+      - ECHO_SIMILARITY_THRESHOLD=${ECHO_SIMILARITY_THRESHOLD:-0.95}
+      - ECHO_RESPONSE_HISTORY_SIZE=${ECHO_RESPONSE_HISTORY_SIZE:-10}
+      - MAX_REGENERATION_ATTEMPTS=${MAX_REGENERATION_ATTEMPTS:-3}
+
       # Thread Configuration
       - OMP_NUM_THREADS=2
       - MKL_NUM_THREADS=2
