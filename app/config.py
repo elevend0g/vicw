@@ -63,6 +63,16 @@ METRICS_LOG_FILE = os.getenv('METRICS_LOG_FILE', 'vicw_metrics.log')
 RAG_TOP_K_SEMANTIC = int(os.getenv('RAG_TOP_K_SEMANTIC', '2'))
 RAG_TOP_K_RELATIONAL = int(os.getenv('RAG_TOP_K_RELATIONAL', '5'))
 
+# State Tracking Configuration
+STATE_TRACKING_ENABLED = os.getenv('STATE_TRACKING_ENABLED', 'true').lower() == 'true'
+STATE_CONFIG_PATH = os.getenv('STATE_CONFIG_PATH', 'app/state_config.yaml')
+STATE_INJECTION_LIMITS = {
+    'goal': int(os.getenv('STATE_LIMIT_GOAL', '2')),
+    'task': int(os.getenv('STATE_LIMIT_TASK', '3')),
+    'decision': int(os.getenv('STATE_LIMIT_DECISION', '2')),
+    'fact': int(os.getenv('STATE_LIMIT_FACT', '3'))
+}
+
 
 def apply_thread_config():
     """Apply thread configuration to environment variables before heavy imports"""

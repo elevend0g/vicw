@@ -12,7 +12,9 @@ from config import (
     MAX_CONTEXT_TOKENS,
     OFFLOAD_THRESHOLD,
     TARGET_AFTER_RELIEF,
-    HYSTERESIS_THRESHOLD
+    HYSTERESIS_THRESHOLD,
+    STATE_TRACKING_ENABLED,
+    STATE_INJECTION_LIMITS
 )
 
 logger = logging.getLogger(__name__)
@@ -261,14 +263,96 @@ class ContextManager:
                     f"relational={len(rag_result.relational_facts)} | "
                     f"total_time_ms={rag_time:.2f}"
                 )
-                
-                return rag_result.total_items
-            
-            return 0
-            
+
+            # 4. Query and inject state tracking information
+            if STATE_TRACKING_ENABLED:
+                try:
+                    state_message = await self._build_state_message()
+                    if state_message:
+                        # Inject state message after RAG message
+                        self.working_context.append(state_message)
+                        logger.info("Injected state tracking information into context")
+                except Exception as e:
+                    logger.error(f"Error injecting state tracking: {e}")
+
+            return rag_result.total_items if rag_message else 0
+
         except Exception as e:
             logger.error(f"Error during RAG augmentation: {e}")
             return 0
+
+    async def _build_state_message(self) -> Optional[Dict[str, str]]:
+        """
+        Build state tracking message from Neo4j.
+        Queries for active and completed states with hard limits.
+        """
+        if not self.semantic_manager or not self.semantic_manager.neo4j_graph:
+            return None
+
+        try:
+            content_parts = ["[STATE MEMORY]"]
+            total_states = 0
+
+            # Query each state type with configured limits
+            for state_type, limit in STATE_INJECTION_LIMITS.items():
+                # Get active states for this type
+                active_states = await self.semantic_manager.neo4j_graph.get_active_states(
+                    state_type=state_type,
+                    limit=limit
+                )
+
+                if active_states:
+                    # Format based on state type
+                    type_label = state_type.capitalize() + "s"
+                    if state_type == 'goal':
+                        type_label = "Active Goals"
+                    elif state_type == 'task':
+                        type_label = "Active Tasks"
+                    elif state_type == 'decision':
+                        type_label = "Decisions"
+                    elif state_type == 'fact':
+                        type_label = "Known Facts"
+
+                    descriptions = [s['desc'] for s in active_states]
+                    content_parts.append(f"{type_label}: {', '.join(descriptions)}")
+                    total_states += len(active_states)
+
+            # Get recently completed states (smaller limit)
+            completed_goals = await self.semantic_manager.neo4j_graph.get_completed_states(
+                state_type='goal',
+                limit=2
+            )
+            completed_tasks = await self.semantic_manager.neo4j_graph.get_completed_states(
+                state_type='task',
+                limit=2
+            )
+
+            completed_items = []
+            if completed_goals:
+                completed_items.extend([s['desc'] for s in completed_goals])
+            if completed_tasks:
+                completed_items.extend([s['desc'] for s in completed_tasks])
+
+            if completed_items:
+                content_parts.append(f"Completed: {', '.join(completed_items)}")
+                total_states += len(completed_items)
+
+            # Add soft prevention note
+            if total_states > 0:
+                content_parts.append("")
+                content_parts.append("Note: Avoid repeating completed actions or contradicting known facts.")
+                content_parts.append("[END STATE MEMORY]")
+
+                return {
+                    "role": "system",
+                    "content": "\n".join(content_parts)
+                }
+
+            return None
+
+        except Exception as e:
+            logger.error(f"Error building state message: {e}")
+            return None
     
     def get_context_window(self) -> List[Dict[str, str]]:
         """

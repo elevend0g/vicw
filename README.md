@@ -9,10 +9,11 @@ VICW Phase 2 combines smart archiving through external memory (knowledge graphs,
 ### Key Features
 
 - **🔥 Hot/Cold Path Separation**: Deterministic pressure control (hot path) decoupled from semantic processing (cold path)
-- **🧠 Hybrid Memory System**: 
+- **🧠 Hybrid Memory System**:
   - Redis for chunk storage
   - Qdrant for semantic vector search
   - Neo4j for knowledge graph and relational tracking
+- **🔄 State Machine (Loop Prevention)**: Automatically tracks goals, tasks, decisions, and facts to prevent conversational loops
 - **🌐 External LLM Integration**: Works with any OpenAI-compatible API (OpenRouter, OpenAI, etc.)
 - **📊 RAG-Enhanced Generation**: Automatic retrieval of relevant memories during inference
 - **⚡ Async-First Architecture**: Non-blocking operations throughout
@@ -44,6 +45,7 @@ VICW Phase 2 combines smart archiving through external memory (knowledge graphs,
 │  3. Redis storage (async I/O)                           │
 │  4. Qdrant indexing (async I/O)                         │
 │  5. Neo4j graph update (async I/O)                      │
+│  6. State extraction & tracking (pattern-based)          │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -204,6 +206,11 @@ All configuration is done through environment variables. See `.env.example` for 
 | `TARGET_AFTER_RELIEF` | `0.60` | Drop to 60% after offload |
 | `RAG_TOP_K_SEMANTIC` | `2` | Number of semantic chunks to retrieve |
 | `RAG_TOP_K_RELATIONAL` | `5` | Number of relational facts to retrieve |
+| `STATE_TRACKING_ENABLED` | `true` | Enable state machine for loop prevention |
+| `STATE_LIMIT_GOAL` | `2` | Max goals to inject into context |
+| `STATE_LIMIT_TASK` | `3` | Max tasks to inject into context |
+| `STATE_LIMIT_DECISION` | `2` | Max decisions to inject into context |
+| `STATE_LIMIT_FACT` | `3` | Max facts to inject into context |
 
 ### Pressure Control Tuning
 
@@ -234,7 +241,9 @@ This prevents "thrashing" where the system repeatedly offloads small amounts.
 
 - **`redis_storage.py`**: Redis client for chunk persistence
 - **`qdrant_vector_db.py`**: Qdrant client for vector search
-- **`neo4j_knowledge_graph.py`**: Neo4j client for knowledge graph
+- **`neo4j_knowledge_graph.py`**: Neo4j client for knowledge graph and state tracking
+- **`state_extractor.py`**: Pattern-based state detection for loop prevention
+- **`state_config.yaml`**: Configurable patterns for state types (goals, tasks, decisions, facts)
 
 ### Infrastructure Modules
 
@@ -256,6 +265,7 @@ The system logs detailed metrics to `vicw_metrics.log`:
 - **LLM_GENERATION**: Generation latency and response length
 - **SEMANTIC_RETRIEVAL**: RAG retrieval performance
 - **HYBRID_RETRIEVAL**: Combined semantic + relational retrieval
+- **STATE_EXTRACTION**: State tracking detection and counts
 
 Example metric log:
 ```
@@ -274,24 +284,31 @@ pip install pytest pytest-asyncio
 
 # Run tests (when implemented)
 pytest tests/
+
+# Test state machine specifically
+python3 test_state_machine.py
 ```
 
 ### Code Structure
 
 ```
 vicw_phase2/
-├── config.py                      # Configuration
-├── data_models.py                 # Data classes
-├── context_manager.py             # Hot path
-├── semantic_manager.py            # Cold path processing
-├── cold_path_worker.py            # Background worker
-├── offload_queue.py               # Async queue
-├── redis_storage.py               # Redis client
-├── qdrant_vector_db.py            # Qdrant client
-├── neo4j_knowledge_graph.py       # Neo4j client
-├── llm_inference.py               # External LLM client
-├── api_server.py                  # FastAPI server
-├── main.py                        # CLI mode
+├── app/
+│   ├── config.py                      # Configuration
+│   ├── data_models.py                 # Data classes
+│   ├── context_manager.py             # Hot path
+│   ├── semantic_manager.py            # Cold path processing
+│   ├── cold_path_worker.py            # Background worker
+│   ├── offload_queue.py               # Async queue
+│   ├── redis_storage.py               # Redis client
+│   ├── qdrant_vector_db.py            # Qdrant client
+│   ├── neo4j_knowledge_graph.py       # Neo4j client & state tracking
+│   ├── state_extractor.py             # Pattern-based state detection
+│   ├── state_config.yaml              # State machine patterns
+│   ├── llm_inference.py               # External LLM client
+│   ├── api_server.py                  # FastAPI server
+│   └── main.py                        # CLI mode
+├── test_state_machine.py          # State machine tests
 ├── requirements.txt               # Dependencies
 ├── Dockerfile                     # Container image
 ├── docker-compose.yml             # Full stack
@@ -312,7 +329,8 @@ The core idea is to separate "working memory" (the LLM's context window) from "l
    - Stores in Redis (text)
    - Indexes in Qdrant (vector)
    - Updates Neo4j (graph)
-4. During generation, **RAG** retrieves relevant memories and injects them
+   - Extracts and tracks states (goals, tasks, decisions, facts)
+4. During generation, **RAG** retrieves relevant memories and **state machine** injects current states
 
 ### Hot Path vs Cold Path
 
@@ -342,6 +360,51 @@ Combines two search methods:
 
 Results are combined and injected into context before generation.
 
+### State Machine (Loop Prevention)
+
+The state machine prevents conversational loops by tracking conversation state across domains (narrative, coding, research, etc.).
+
+**The Problem**: Without state tracking, LLMs can loop endlessly:
+- Narrative: "Let's go to the Hydro-Plant" → arrives → forgets → "Let's go to the Hydro-Plant" (loop)
+- Coding: "Let's refactor the auth module" → merges → forgets → "Let's refactor the auth module" (loop)
+
+**The Solution**: Track state changes and inject them into context:
+
+1. **Pattern-Based Detection** (Cold Path):
+   - During offload, `state_extractor` scans text for state patterns
+   - Detects 4 state types: **goals**, **tasks**, **decisions**, **facts**
+   - Uses simple keyword patterns from `state_config.yaml`
+
+2. **Neo4j Storage**:
+   - Creates/updates `:State` nodes with type, description, status
+   - Status transitions: `active` → `completed` or `invalid`
+   - Fuzzy deduplication prevents duplicate states
+
+3. **Context Injection** (Hot Path):
+   - Before LLM generation, queries Neo4j for current states
+   - Injects formatted state message with hard limits:
+     - 2 goals, 3 tasks, 2 decisions, 3 facts (configurable)
+   - Includes recently completed states as warnings
+
+**Example Flow**:
+```
+User: "Let's go to the Hydro-Plant"
+→ Offload → Extract → Create State(goal, "go to the hydro-plant", active)
+
+User: "We arrived at the Hydro-Plant"
+→ Offload → Extract → Update State(goal, "go to the hydro-plant", completed)
+
+Next LLM generation:
+→ Query Neo4j → Inject "[STATE MEMORY] Completed: go to the hydro-plant"
+→ LLM sees completed state → Proposes next goal instead of looping
+```
+
+**Key Features**:
+- Domain-agnostic: Works for narrative, coding, research, etc.
+- Configurable: Edit patterns in `state_config.yaml` without code changes
+- Soft prevention: Warns LLM but doesn't force behavior
+- Fast: Rule-based pattern matching, no API calls
+
 ## 🚨 Troubleshooting
 
 ### Common Issues
@@ -360,6 +423,17 @@ Results are combined and injected into context before generation.
 
 **Issue**: Memory usage high
 - **Solution**: Reduce `MAX_CONTEXT_TOKENS` or `MAX_OFFLOAD_QUEUE_SIZE`
+
+**Issue**: States not being detected
+- **Solution**: Check `app/state_config.yaml` patterns match your conversation style
+- **Solution**: Run `python3 test_state_machine.py` to verify pattern matching
+- **Solution**: Verify `STATE_TRACKING_ENABLED=true` in environment
+
+**Issue**: Conversation still loops despite state machine
+- **Solution**: Check Neo4j to verify states are created: `MATCH (s:State) RETURN s`
+- **Solution**: Check logs for "Injected state tracking" messages
+- **Solution**: Increase pattern coverage in `state_config.yaml`
+- **Solution**: Ensure RAG is enabled (`use_rag: true` in API calls)
 
 ### Debug Mode
 

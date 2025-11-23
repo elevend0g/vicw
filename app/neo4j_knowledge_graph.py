@@ -54,10 +54,20 @@ class Neo4jKnowledgeGraph:
                     "CREATE CONSTRAINT chunk_id_unique IF NOT EXISTS "
                     "FOR (c:Chunk) REQUIRE c.job_id IS UNIQUE"
                 )
-                
+
+                # State uniqueness
+                await session.run(
+                    "CREATE CONSTRAINT state_id_unique IF NOT EXISTS "
+                    "FOR (s:State) REQUIRE s.id IS UNIQUE"
+                )
+
                 # Create indexes for performance
                 await session.run(
                     "CREATE INDEX entity_name_idx IF NOT EXISTS FOR (e:Entity) ON (e.name)"
+                )
+
+                await session.run(
+                    "CREATE INDEX state_type_status_idx IF NOT EXISTS FOR (s:State) ON (s.type, s.status)"
                 )
                 
                 await session.run(
@@ -241,6 +251,192 @@ class Neo4jKnowledgeGraph:
                 logger.error(f"Error getting entity context: {e}")
                 return {}
     
+    async def create_state(self, state_type: str, description: str, status: str = "active") -> str:
+        """
+        COLD PATH: Create a new state node.
+        Returns the state_id.
+        """
+        from data_models import State
+
+        state = State.create(state_type, description, status)
+
+        async with self._driver.session() as session:
+            try:
+                await session.run("""
+                    CREATE (s:State {
+                        id: $id,
+                        type: $type,
+                        desc: $desc,
+                        status: $status,
+                        created: $created,
+                        updated: $updated
+                    })
+                """, parameters={
+                    "id": state.id,
+                    "type": state.type,
+                    "desc": state.desc,
+                    "status": state.status,
+                    "created": int(state.created),
+                    "updated": int(state.updated)
+                })
+                logger.debug(f"Created state: {state_type}/{description} ({status})")
+                return state.id
+            except Exception as e:
+                logger.error(f"Error creating state: {e}")
+                return None
+
+    async def find_similar_state(self, state_type: str, description: str) -> Dict[str, Any]:
+        """
+        COLD PATH: Find existing state by type and fuzzy match on description.
+        Returns state dict or None.
+        """
+        # Simple fuzzy matching: lowercase and check if descriptions are very similar
+        desc_lower = description.lower().strip()
+
+        async with self._driver.session() as session:
+            try:
+                result = await session.run("""
+                    MATCH (s:State {type: $type})
+                    WHERE toLower(s.desc) CONTAINS $desc_part
+                       OR $desc_part CONTAINS toLower(s.desc)
+                    RETURN s
+                    LIMIT 1
+                """, parameters={
+                    "type": state_type,
+                    "desc_part": desc_lower[:30]  # Use first 30 chars for matching
+                })
+
+                record = await result.single()
+                if record:
+                    state_node = record['s']
+                    return {
+                        "id": state_node.get("id"),
+                        "type": state_node.get("type"),
+                        "desc": state_node.get("desc"),
+                        "status": state_node.get("status"),
+                        "created": state_node.get("created"),
+                        "updated": state_node.get("updated")
+                    }
+                return None
+            except Exception as e:
+                logger.error(f"Error finding similar state: {e}")
+                return None
+
+    async def update_state_status(self, state_id: str, new_status: str) -> bool:
+        """
+        COLD PATH: Update the status of an existing state.
+        Returns True if successful.
+        """
+        async with self._driver.session() as session:
+            try:
+                result = await session.run("""
+                    MATCH (s:State {id: $state_id})
+                    SET s.status = $new_status,
+                        s.updated = $updated
+                    RETURN s
+                """, parameters={
+                    "state_id": state_id,
+                    "new_status": new_status,
+                    "updated": int(asyncio.get_event_loop().time())
+                })
+
+                record = await result.single()
+                if record:
+                    logger.debug(f"Updated state {state_id} to {new_status}")
+                    return True
+                return False
+            except Exception as e:
+                logger.error(f"Error updating state status: {e}")
+                return False
+
+    async def get_active_states(self, state_type: str = None, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        HOT PATH: Get active states (status='active').
+        If state_type is provided, filter by type.
+        """
+        async with self._driver.session() as session:
+            try:
+                if state_type:
+                    query = """
+                        MATCH (s:State {type: $type, status: 'active'})
+                        RETURN s
+                        ORDER BY s.created DESC
+                        LIMIT $limit
+                    """
+                    params = {"type": state_type, "limit": limit}
+                else:
+                    query = """
+                        MATCH (s:State {status: 'active'})
+                        RETURN s
+                        ORDER BY s.created DESC
+                        LIMIT $limit
+                    """
+                    params = {"limit": limit}
+
+                result = await session.run(query, parameters=params)
+
+                states = []
+                async for record in result:
+                    state_node = record['s']
+                    states.append({
+                        "id": state_node.get("id"),
+                        "type": state_node.get("type"),
+                        "desc": state_node.get("desc"),
+                        "status": state_node.get("status"),
+                        "created": state_node.get("created"),
+                        "updated": state_node.get("updated")
+                    })
+
+                logger.debug(f"Retrieved {len(states)} active states (type={state_type})")
+                return states
+            except Exception as e:
+                logger.error(f"Error getting active states: {e}")
+                return []
+
+    async def get_completed_states(self, state_type: str = None, limit: int = 5) -> List[Dict[str, Any]]:
+        """
+        HOT PATH: Get completed states (status='completed').
+        If state_type is provided, filter by type.
+        """
+        async with self._driver.session() as session:
+            try:
+                if state_type:
+                    query = """
+                        MATCH (s:State {type: $type, status: 'completed'})
+                        RETURN s
+                        ORDER BY s.updated DESC
+                        LIMIT $limit
+                    """
+                    params = {"type": state_type, "limit": limit}
+                else:
+                    query = """
+                        MATCH (s:State {status: 'completed'})
+                        RETURN s
+                        ORDER BY s.updated DESC
+                        LIMIT $limit
+                    """
+                    params = {"limit": limit}
+
+                result = await session.run(query, parameters=params)
+
+                states = []
+                async for record in result:
+                    state_node = record['s']
+                    states.append({
+                        "id": state_node.get("id"),
+                        "type": state_node.get("type"),
+                        "desc": state_node.get("desc"),
+                        "status": state_node.get("status"),
+                        "created": state_node.get("created"),
+                        "updated": state_node.get("updated")
+                    })
+
+                logger.debug(f"Retrieved {len(states)} completed states (type={state_type})")
+                return states
+            except Exception as e:
+                logger.error(f"Error getting completed states: {e}")
+                return []
+
     async def clear_graph(self) -> None:
         """Clear all nodes and relationships (use with caution!)"""
         async with self._driver.session() as session:

@@ -12,7 +12,8 @@ from data_models import OffloadJob, OffloadResult, RAGResult
 from redis_storage import RedisStorage
 from qdrant_vector_db import QdrantVectorDB
 from neo4j_knowledge_graph import Neo4jKnowledgeGraph
-from config import RAG_TOP_K_SEMANTIC, RAG_TOP_K_RELATIONAL
+from config import RAG_TOP_K_SEMANTIC, RAG_TOP_K_RELATIONAL, STATE_TRACKING_ENABLED, STATE_CONFIG_PATH
+from state_extractor import get_extractor
 
 logger = logging.getLogger(__name__)
 metrics_logger = logging.getLogger('vicw.metrics')
@@ -145,7 +146,34 @@ class SemanticManager:
             
             # Update Neo4j knowledge graph (async I/O)
             await self.neo4j_graph.update_graph_from_context(job.job_id, summary)
-            
+
+            # Extract and track states (async I/O)
+            if STATE_TRACKING_ENABLED:
+                try:
+                    extractor = get_extractor(STATE_CONFIG_PATH)
+                    states = extractor.extract_states(job.chunk_text)
+
+                    for state_type, desc, inferred_status in states:
+                        # Check if similar state already exists
+                        existing = await self.neo4j_graph.find_similar_state(state_type, desc)
+
+                        if existing:
+                            # Update existing state if status changed
+                            if existing.get('status') != inferred_status:
+                                await self.neo4j_graph.update_state_status(existing['id'], inferred_status)
+                                logger.debug(f"Updated state {existing['id']}: {existing['status']} -> {inferred_status}")
+                        else:
+                            # Create new state
+                            state_id = await self.neo4j_graph.create_state(state_type, desc, inferred_status)
+                            if state_id:
+                                logger.debug(f"Created new state: {state_type}/{desc} ({inferred_status})")
+
+                    if states:
+                        metrics_logger.info(f"STATE_EXTRACTION | job_id={job.job_id} | states_found={len(states)}")
+
+                except Exception as e:
+                    logger.error(f"Error extracting states from job {job.job_id}: {e}")
+
             process_time = (time.time() - job_start_time) * 1000
             logger.info(f"Completed offload job {job.job_id} in {process_time:.2f}ms")
             
