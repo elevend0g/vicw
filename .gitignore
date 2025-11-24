@@ -68,3 +68,4 @@ htmlcov/
 models/*
 .cache/
 CLAUDE.md
+system_prompt.txt
