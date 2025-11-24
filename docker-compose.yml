@@ -17,7 +17,10 @@ services:
       - VICW_LLM_API_KEY=${VICW_LLM_API_KEY}
       - VICW_LLM_API_URL=${VICW_LLM_API_URL:-https://api.openrouter.ai/api/v1/chat/completions}
       - VICW_LLM_MODEL_NAME=${VICW_LLM_MODEL_NAME:-mistralai/mistral-7b-instruct}
-      
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-500}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.3}
+      - 'LLM_RESPONSE_FORMAT=${LLM_RESPONSE_FORMAT:-{"type": "text"}}'
+
       # Redis Configuration
       - REDIS_HOST=redis
       - REDIS_PORT=6379

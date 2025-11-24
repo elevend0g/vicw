@@ -586,6 +586,17 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
     """
     global context_manager, llm, cold_path_worker
 
+    # DEBUG: Log incoming request parameters
+    logger.info("=" * 60)
+    logger.info("OpenWebUI Request Received:")
+    logger.info(f"  model: {request.model}")
+    logger.info(f"  response_format: {request.response_format}")
+    logger.info(f"  stop: {request.stop}")
+    logger.info(f"  temperature: {request.temperature}")
+    logger.info(f"  stream: {request.stream}")
+    logger.info(f"  messages count: {len(request.messages)}")
+    logger.info("=" * 60)
+
     if not context_manager or not llm:
         raise HTTPException(status_code=503, detail="VICW system not initialized")
 

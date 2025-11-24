@@ -9,7 +9,8 @@ import httpx
 from config import (
     LLM_TIMEOUT,
     LLM_MAX_TOKENS,
-    LLM_TEMPERATURE
+    LLM_TEMPERATURE,
+    LLM_RESPONSE_FORMAT
 )
 
 logger = logging.getLogger(__name__)
@@ -80,13 +81,24 @@ class ExternalLLMInference:
             "stream": False
         }
 
-        # Add optional parameters if provided
-        if response_format is not None:
-            payload["response_format"] = response_format
+        # Add response_format - use provided value, or default from config
+        payload["response_format"] = response_format if response_format is not None else LLM_RESPONSE_FORMAT
 
+        # Add stop sequences if provided
         if stop is not None:
             payload["stop"] = stop
-        
+
+        # DEBUG: Log outgoing payload to external LLM
+        logger.info("=" * 60)
+        logger.info("Payload to OpenRouter:")
+        logger.info(f"  model: {payload.get('model')}")
+        logger.info(f"  response_format: {payload.get('response_format')}")
+        logger.info(f"  stop: {payload.get('stop')}")
+        logger.info(f"  temperature: {payload.get('temperature')}")
+        logger.info(f"  max_tokens: {payload.get('max_tokens')}")
+        logger.info(f"  messages count: {len(payload.get('messages', []))}")
+        logger.info("=" * 60)
+
         try:
             response = await self.client.post(
                 self.api_url,

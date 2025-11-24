@@ -1,6 +1,7 @@
 """Configuration constants for VICW Phase 2"""
 
 import os
+import json
 
 # API Configuration
 API_HOST = os.getenv('API_HOST', '0.0.0.0')
@@ -16,6 +17,13 @@ VICW_BRANDED_MODEL_NAME = f"vicw-{EXTERNAL_MODEL_NAME}"
 LLM_TIMEOUT = int(os.getenv('LLM_TIMEOUT', '90'))  # seconds
 LLM_MAX_TOKENS = int(os.getenv('LLM_MAX_TOKENS', '500'))
 LLM_TEMPERATURE = float(os.getenv('LLM_TEMPERATURE', '0.3'))
+
+# Response format - parse JSON string from env var
+_response_format_str = os.getenv('LLM_RESPONSE_FORMAT', '{"type": "text"}')
+try:
+    LLM_RESPONSE_FORMAT = json.loads(_response_format_str)
+except json.JSONDecodeError:
+    LLM_RESPONSE_FORMAT = {"type": "text"}
 
 # Context Configuration
 MAX_CONTEXT_TOKENS = int(os.getenv('MAX_CONTEXT_TOKENS', '4096'))
