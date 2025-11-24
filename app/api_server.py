@@ -721,10 +721,10 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                     yield f"data: {initial_chunk.model_dump_json()}\n\n"
 
                     # Stream the response in chunks (simulate token-by-token)
-                    # Split by words for smoother streaming
-                    words = response_text.split()
-                    for i, word in enumerate(words):
-                        content = word if i == 0 else f" {word}"
+                    # Split into small chunks while preserving all whitespace (including newlines)
+                    chunk_size = 5  # characters per chunk
+                    for i in range(0, len(response_text), chunk_size):
+                        content = response_text[i:i+chunk_size]
                         chunk = OpenAIChatCompletionChunk(
                             id=completion_id,
                             created=created_time,
