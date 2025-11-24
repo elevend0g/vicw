@@ -12,6 +12,7 @@ API_VERSION = "2.0.0"
 EXTERNAL_API_URL = os.getenv('VICW_LLM_API_URL', 'https://api.openrouter.ai/api/v1/chat/completions')
 EXTERNAL_API_KEY = os.getenv('VICW_LLM_API_KEY', '')
 EXTERNAL_MODEL_NAME = os.getenv('VICW_LLM_MODEL_NAME', 'mistralai/mistral-7b-instruct')
+VICW_BRANDED_MODEL_NAME = f"vicw-{EXTERNAL_MODEL_NAME}"
 LLM_TIMEOUT = int(os.getenv('LLM_TIMEOUT', '90'))  # seconds
 LLM_MAX_TOKENS = int(os.getenv('LLM_MAX_TOKENS', '500'))
 LLM_TEMPERATURE = float(os.getenv('LLM_TEMPERATURE', '0.3'))

@@ -3,12 +3,15 @@
 import os
 import logging
 import asyncio
+import json
+import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict, Any, Literal
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 import uvicorn
 
 # Set thread limits BEFORE imports
@@ -32,6 +35,7 @@ from config import (
     EXTERNAL_API_URL,
     EXTERNAL_API_KEY,
     EXTERNAL_MODEL_NAME,
+    VICW_BRANDED_MODEL_NAME,
     LLM_TIMEOUT,
     EMBEDDING_MODEL_NAME,
     ECHO_GUARD_ENABLED,
@@ -84,6 +88,81 @@ class ChatResponse(BaseModel):
     timestamp: str
     tokens_in_context: Optional[int] = None
     rag_items_injected: Optional[int] = 0
+
+
+# ============================================================================
+# OpenAI-Compatible API Models
+# ============================================================================
+
+class OpenAIMessage(BaseModel):
+    role: Literal["system", "user", "assistant"]
+    content: str
+    name: Optional[str] = None
+
+
+class OpenAIChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[OpenAIMessage]
+    temperature: Optional[float] = Field(default=1.0, ge=0, le=2)
+    top_p: Optional[float] = Field(default=1.0, ge=0, le=1)
+    n: Optional[int] = Field(default=1, ge=1, le=1)  # VICW only supports 1
+    stream: Optional[bool] = False
+    max_tokens: Optional[int] = None
+    presence_penalty: Optional[float] = Field(default=0, ge=-2, le=2)
+    frequency_penalty: Optional[float] = Field(default=0, ge=-2, le=2)
+    user: Optional[str] = None
+
+
+class OpenAIUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+class OpenAIChoiceMessage(BaseModel):
+    role: str
+    content: str
+
+
+class OpenAIChoice(BaseModel):
+    index: int
+    message: OpenAIChoiceMessage
+    finish_reason: str
+
+
+class OpenAIChatCompletionResponse(BaseModel):
+    id: str
+    object: str = "chat.completion"
+    created: int
+    model: str
+    choices: List[OpenAIChoice]
+    usage: OpenAIUsage
+
+
+class OpenAIStreamChoice(BaseModel):
+    index: int
+    delta: Dict[str, Any]
+    finish_reason: Optional[str] = None
+
+
+class OpenAIChatCompletionChunk(BaseModel):
+    id: str
+    object: str = "chat.completion.chunk"
+    created: int
+    model: str
+    choices: List[OpenAIStreamChoice]
+
+
+class OpenAIModel(BaseModel):
+    id: str
+    object: str = "model"
+    created: int
+    owned_by: str
+
+
+class OpenAIModelList(BaseModel):
+    object: str = "list"
+    data: List[OpenAIModel]
 
 
 @app.on_event("startup")
@@ -429,7 +508,7 @@ async def health():
     return {
         "status": "healthy",
         "system": "VICW Phase 2",
-        "model": EXTERNAL_MODEL_NAME,
+        "model": VICW_BRANDED_MODEL_NAME,
         "context_initialized": context_manager is not None,
         "llm_initialized": llm is not None
     }
@@ -464,19 +543,345 @@ async def stats():
 async def reset_context():
     """Reset the context (useful for testing)"""
     global context_manager
-    
+
     if not context_manager:
         raise HTTPException(status_code=503, detail="Context manager not initialized")
-    
+
     # Create new context manager
     context_manager.working_context = []
     context_manager.offload_job_count = 0
     context_manager.placeholder_markers = {}
     context_manager.last_relief_tokens = 0
-    
+
     logger.info("Context reset")
-    
+
     return {"status": "success", "message": "Context reset"}
+
+
+# ============================================================================
+# OpenAI-Compatible Endpoints
+# ============================================================================
+
+@app.get("/v1/models", response_model=OpenAIModelList)
+async def list_models():
+    """List available models (OpenAI-compatible endpoint)"""
+    return OpenAIModelList(
+        data=[
+            OpenAIModel(
+                id=VICW_BRANDED_MODEL_NAME,
+                created=int(time.time()),
+                owned_by="vicw"
+            )
+        ]
+    )
+
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(request: OpenAIChatCompletionRequest):
+    """
+    OpenAI-compatible chat completions endpoint.
+    Supports both streaming and non-streaming responses.
+    """
+    global context_manager, llm, cold_path_worker
+
+    if not context_manager or not llm:
+        raise HTTPException(status_code=503, detail="VICW system not initialized")
+
+    try:
+        # Generate a unique ID for this completion
+        completion_id = f"chatcmpl-{int(time.time() * 1000)}"
+        created_time = int(time.time())
+
+        # Extract the last user message for RAG query
+        user_messages = [msg for msg in request.messages if msg.role == "user"]
+        if not user_messages:
+            raise HTTPException(status_code=400, detail="No user message found")
+
+        last_user_message = user_messages[-1].content
+
+        # Add all messages to context (clear and rebuild from OpenAI format)
+        # Note: For production, you may want to implement proper conversation tracking
+        # For now, we'll just process the last user message
+        await context_manager.add_message("user", last_user_message)
+
+        # Perform RAG (always enabled for OpenAI endpoint)
+        rag_items = 0
+        if context_manager.semantic_manager:
+            rag_items = await context_manager.augment_context_with_memory(last_user_message)
+
+        # Pause cold path during generation
+        if cold_path_worker:
+            await cold_path_worker.pause()
+
+        # Get context window
+        context_window = context_manager.get_context_window()
+
+        # Handle streaming vs non-streaming
+        if request.stream:
+            # Streaming response
+            async def generate_stream():
+                """Generate SSE stream for OpenAI-compatible streaming"""
+                try:
+                    # In streaming mode, we'll generate the full response first
+                    # then stream it token-by-token (VICW doesn't support true streaming yet)
+                    response_text = None
+                    response_embedding = None
+                    regeneration_count = 0
+
+                    # Echo Guard loop (same as non-streaming)
+                    while regeneration_count < MAX_REGENERATION_ATTEMPTS:
+                        try:
+                            current_response = await asyncio.wait_for(
+                                llm.generate(context_window),
+                                timeout=LLM_TIMEOUT
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(f"LLM generation timeout after {LLM_TIMEOUT}s")
+                            # Send error chunk
+                            error_chunk = {
+                                "id": completion_id,
+                                "object": "chat.completion.chunk",
+                                "created": created_time,
+                                "model": request.model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": {"content": "[ERROR: Generation timeout]"},
+                                    "finish_reason": "error"
+                                }]
+                            }
+                            yield f"data: {json.dumps(error_chunk)}\n\n"
+                            yield "data: [DONE]\n\n"
+                            return
+
+                        # Handle empty responses
+                        if not current_response or not current_response.strip():
+                            regeneration_count += 1
+                            if regeneration_count >= MAX_REGENERATION_ATTEMPTS:
+                                current_response = "[ERROR] Failed to generate response"
+                                break
+                            continue
+
+                        # Check for echo if enabled
+                        if ECHO_GUARD_ENABLED and context_manager.semantic_manager:
+                            response_embedding = await context_manager.semantic_manager.generate_embedding(current_response)
+
+                            if response_embedding:
+                                is_duplicate, similarity = await context_manager.semantic_manager.check_response_similarity(
+                                    response_embedding,
+                                    threshold=ECHO_SIMILARITY_THRESHOLD
+                                )
+
+                                if is_duplicate:
+                                    regeneration_count += 1
+                                    if regeneration_count >= MAX_REGENERATION_ATTEMPTS:
+                                        current_response = f"[REPEATED] {current_response}"
+                                        break
+                                    continue
+
+                        response_text = current_response
+                        break
+
+                    if response_text is None:
+                        response_text = "[ERROR] Failed to generate response"
+
+                    # Store response embedding
+                    if ECHO_GUARD_ENABLED and response_embedding and context_manager.semantic_manager:
+                        await context_manager.semantic_manager.store_response_embedding(response_embedding)
+
+                    # Send initial chunk with role
+                    initial_chunk = OpenAIChatCompletionChunk(
+                        id=completion_id,
+                        created=created_time,
+                        model=request.model,
+                        choices=[
+                            OpenAIStreamChoice(
+                                index=0,
+                                delta={"role": "assistant"},
+                                finish_reason=None
+                            )
+                        ]
+                    )
+                    yield f"data: {initial_chunk.model_dump_json()}\n\n"
+
+                    # Stream the response in chunks (simulate token-by-token)
+                    # Split by words for smoother streaming
+                    words = response_text.split()
+                    for i, word in enumerate(words):
+                        content = word if i == 0 else f" {word}"
+                        chunk = OpenAIChatCompletionChunk(
+                            id=completion_id,
+                            created=created_time,
+                            model=request.model,
+                            choices=[
+                                OpenAIStreamChoice(
+                                    index=0,
+                                    delta={"content": content},
+                                    finish_reason=None
+                                )
+                            ]
+                        )
+                        yield f"data: {chunk.model_dump_json()}\n\n"
+                        await asyncio.sleep(0.01)  # Small delay for smoother streaming
+
+                    # Send final chunk with finish_reason
+                    final_chunk = OpenAIChatCompletionChunk(
+                        id=completion_id,
+                        created=created_time,
+                        model=request.model,
+                        choices=[
+                            OpenAIStreamChoice(
+                                index=0,
+                                delta={},
+                                finish_reason="stop"
+                            )
+                        ]
+                    )
+                    yield f"data: {final_chunk.model_dump_json()}\n\n"
+                    yield "data: [DONE]\n\n"
+
+                    # Add response to context
+                    await context_manager.add_message("assistant", response_text)
+
+                finally:
+                    # Resume cold path
+                    if cold_path_worker:
+                        await cold_path_worker.resume()
+
+            return StreamingResponse(
+                generate_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                }
+            )
+
+        else:
+            # Non-streaming response (same logic as /chat endpoint)
+            response_text = None
+            response_embedding = None
+            regeneration_count = 0
+
+            while regeneration_count < MAX_REGENERATION_ATTEMPTS:
+                try:
+                    current_response = await asyncio.wait_for(
+                        llm.generate(context_window),
+                        timeout=LLM_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"LLM generation timeout after {LLM_TIMEOUT}s")
+                    raise HTTPException(status_code=504, detail="LLM generation timeout")
+
+                # Handle empty responses
+                if not current_response or not current_response.strip():
+                    regeneration_count += 1
+                    if regeneration_count < MAX_REGENERATION_ATTEMPTS:
+                        from data_models import Message
+                        empty_warning = Message(
+                            role="system",
+                            content=(
+                                "⚠️ ERROR: You generated an empty response.\n\n"
+                                "You MUST provide a substantive response."
+                            )
+                        )
+                        context_window.append(empty_warning.to_dict())
+                        continue
+                    else:
+                        response_text = "[ERROR] Failed to generate response after multiple attempts"
+                        break
+
+                # Check for echo if enabled
+                if ECHO_GUARD_ENABLED and context_manager.semantic_manager:
+                    response_embedding = await context_manager.semantic_manager.generate_embedding(current_response)
+
+                    if response_embedding:
+                        is_duplicate, similarity = await context_manager.semantic_manager.check_response_similarity(
+                            response_embedding,
+                            threshold=ECHO_SIMILARITY_THRESHOLD
+                        )
+
+                        if is_duplicate:
+                            regeneration_count += 1
+                            logger.warning(
+                                f"Echo detected (attempt {regeneration_count}/{MAX_REGENERATION_ATTEMPTS}): "
+                                f"similarity={similarity:.4f}"
+                            )
+
+                            if regeneration_count < MAX_REGENERATION_ATTEMPTS:
+                                from data_models import Message
+                                warning_content = (
+                                    "⚠️ ECHO DETECTED: Your previous response was nearly identical to recent history.\n"
+                                    "Provide a DIFFERENT response now."
+                                )
+
+                                if regeneration_count >= ECHO_STRIP_CONTEXT_ON_RETRY:
+                                    context_window = [msg for msg in context_window
+                                                     if not (msg.get('role') == 'system' and
+                                                            ('RETRIEVED' in msg.get('content', '') or
+                                                             'STATE MEMORY' in msg.get('content', '')))]
+
+                                warning_msg = Message(role="system", content=warning_content)
+                                context_window.append(warning_msg.to_dict())
+                                continue
+                            else:
+                                response_text = f"[REPEATED] {current_response}"
+                                break
+                        else:
+                            response_text = current_response
+                            break
+                    else:
+                        response_text = current_response
+                        break
+                else:
+                    response_text = current_response
+                    break
+
+            if response_text is None:
+                response_text = "[ERROR] Failed to generate response"
+
+            # Store response embedding
+            if ECHO_GUARD_ENABLED and response_embedding and context_manager.semantic_manager:
+                await context_manager.semantic_manager.store_response_embedding(response_embedding)
+
+            # Resume cold path
+            if cold_path_worker:
+                await cold_path_worker.resume()
+
+            # Add response to context
+            await context_manager.add_message("assistant", response_text)
+
+            # Get token counts (approximate)
+            token_count = context_manager._token_count()
+            prompt_tokens = token_count - len(response_text.split())  # Rough estimate
+            completion_tokens = len(response_text.split())
+
+            # Build OpenAI-compatible response
+            return OpenAIChatCompletionResponse(
+                id=completion_id,
+                created=created_time,
+                model=request.model,
+                choices=[
+                    OpenAIChoice(
+                        index=0,
+                        message=OpenAIChoiceMessage(
+                            role="assistant",
+                            content=response_text
+                        ),
+                        finish_reason="stop"
+                    )
+                ],
+                usage=OpenAIUsage(
+                    prompt_tokens=max(1, prompt_tokens),
+                    completion_tokens=completion_tokens,
+                    total_tokens=token_count
+                )
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"OpenAI chat completion error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
