@@ -111,6 +111,8 @@ class OpenAIChatCompletionRequest(BaseModel):
     presence_penalty: Optional[float] = Field(default=0, ge=-2, le=2)
     frequency_penalty: Optional[float] = Field(default=0, ge=-2, le=2)
     user: Optional[str] = None
+    response_format: Optional[Dict[str, Any]] = None
+    stop: Optional[Any] = None  # Can be string or list of strings
 
 
 class OpenAIUsage(BaseModel):
@@ -632,7 +634,11 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
                     while regeneration_count < MAX_REGENERATION_ATTEMPTS:
                         try:
                             current_response = await asyncio.wait_for(
-                                llm.generate(context_window),
+                                llm.generate(
+                                    context_window,
+                                    response_format=request.response_format,
+                                    stop=request.stop
+                                ),
                                 timeout=LLM_TIMEOUT
                             )
                         except asyncio.TimeoutError:
@@ -765,7 +771,11 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
             while regeneration_count < MAX_REGENERATION_ATTEMPTS:
                 try:
                     current_response = await asyncio.wait_for(
-                        llm.generate(context_window),
+                        llm.generate(
+                            context_window,
+                            response_format=request.response_format,
+                            stop=request.stop
+                        ),
                         timeout=LLM_TIMEOUT
                     )
                 except asyncio.TimeoutError:

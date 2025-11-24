@@ -46,23 +46,32 @@ class ExternalLLMInference:
         )
         logger.info("External LLM client initialized")
     
-    async def generate(self, context: List[Dict[str, str]], max_tokens: int = None, temperature: float = None) -> str:
+    async def generate(
+        self,
+        context: List[Dict[str, str]],
+        max_tokens: int = None,
+        temperature: float = None,
+        response_format: Dict = None,
+        stop: any = None
+    ) -> str:
         """
         Asynchronous generation via HTTP POST request.
-        
+
         Args:
             context: List of message dicts with 'role' and 'content'
             max_tokens: Maximum tokens to generate (default from config)
             temperature: Sampling temperature (default from config)
-        
+            response_format: Response format specification (e.g., {"type": "text"})
+            stop: Stop sequences (string or list of strings)
+
         Returns:
             Generated text response
         """
         if not self.client:
             raise RuntimeError("LLM client not initialized. Call init() first.")
-        
+
         gen_start_time = time.time()
-        
+
         payload = {
             "model": self.model_name,
             "messages": context,
@@ -70,6 +79,13 @@ class ExternalLLMInference:
             "temperature": temperature or LLM_TEMPERATURE,
             "stream": False
         }
+
+        # Add optional parameters if provided
+        if response_format is not None:
+            payload["response_format"] = response_format
+
+        if stop is not None:
+            payload["stop"] = stop
         
         try:
             response = await self.client.post(
