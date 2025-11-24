@@ -1,10 +1,10 @@
-# VICW Phase 2 - Virtual Infinite Context Window
+# VICW - Virtual Infinite Context Window
 
 A production-ready implementation of a Virtual Infinite Context Window system that enables language models to maintain persistent context beyond their native token limits.
 
 ## 🎯 Overview
 
-VICW Phase 2 combines smart archiving through external memory (knowledge graphs, vector embeddings) with intelligent retrieval mechanisms to create a scalable, async-first architecture for unlimited conversation context.
+VICW combines smart archiving through external memory (knowledge graphs, vector embeddings) with intelligent retrieval mechanisms to create a scalable, async-first architecture for unlimited conversation context.
 
 ### Key Features
 
@@ -13,7 +13,10 @@ VICW Phase 2 combines smart archiving through external memory (knowledge graphs,
   - Redis for chunk storage
   - Qdrant for semantic vector search
   - Neo4j for knowledge graph and relational tracking
-- **🔄 State Machine (Loop Prevention)**: Automatically tracks goals, tasks, decisions, and facts to prevent conversational loops
+- **🔄 Advanced Loop Prevention System**:
+  - **State Machine**: Tracks goals, tasks, decisions, and facts across domains
+  - **Boredom Detection**: Monitors state visit frequency to detect repetitive focus
+  - **Echo Guard**: Detects duplicate LLM responses with escalating interventions
 - **🌐 External LLM Integration**: Works with any OpenAI-compatible API (OpenRouter, OpenAI, etc.)
 - **📊 RAG-Enhanced Generation**: Automatic retrieval of relevant memories during inference
 - **⚡ Async-First Architecture**: Non-blocking operations throughout
@@ -46,6 +49,15 @@ VICW Phase 2 combines smart archiving through external memory (knowledge graphs,
 │  4. Qdrant indexing (async I/O)                         │
 │  5. Neo4j graph update (async I/O)                      │
 │  6. State extraction & tracking (pattern-based)          │
+│  7. Response similarity check (echo detection)           │
+└──────────────────────────────────────────────────────────┘
+              │
+              ▼
+┌──────────────────────────────────────────────────────────┐
+│           LOOP PREVENTION (Multi-Layered)                │
+│  • State Machine: Track goals/tasks/decisions/facts      │
+│  • Boredom Detection: Monitor state visit frequency      │
+│  • Echo Guard: Detect & regenerate duplicate responses   │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -61,7 +73,7 @@ VICW Phase 2 combines smart archiving through external memory (knowledge graphs,
 
 1. **Clone and configure**:
 ```bash
-cd vicw_phase2
+cd vicw_api
 cp .env.example .env
 # Edit .env and add your VICW_LLM_API_KEY
 ```
@@ -211,6 +223,12 @@ All configuration is done through environment variables. See `.env.example` for 
 | `STATE_LIMIT_TASK` | `3` | Max tasks to inject into context |
 | `STATE_LIMIT_DECISION` | `2` | Max decisions to inject into context |
 | `STATE_LIMIT_FACT` | `3` | Max facts to inject into context |
+| `BOREDOM_DETECTION_ENABLED` | `true` | Enable state visit frequency monitoring |
+| `BOREDOM_THRESHOLD` | `5` | Number of visits before warning triggers |
+| `ECHO_GUARD_ENABLED` | `true` | Enable duplicate response detection |
+| `ECHO_SIMILARITY_THRESHOLD` | `0.95` | Similarity threshold for duplicate detection |
+| `ECHO_RESPONSE_HISTORY_SIZE` | `10` | Number of recent responses to compare |
+| `MAX_REGENERATION_ATTEMPTS` | `3` | Max retries on duplicate detection |
 
 ### Pressure Control Tuning
 
@@ -266,6 +284,9 @@ The system logs detailed metrics to `vicw_metrics.log`:
 - **SEMANTIC_RETRIEVAL**: RAG retrieval performance
 - **HYBRID_RETRIEVAL**: Combined semantic + relational retrieval
 - **STATE_EXTRACTION**: State tracking detection and counts
+- **BOREDOM_DETECTED**: State visit frequency warnings
+- **ECHO_DETECTED**: Duplicate response detection and regeneration attempts
+- **ECHO_GUARD_RETRY**: Similarity scores and retry attempts
 
 Example metric log:
 ```
@@ -292,7 +313,7 @@ python3 test_state_machine.py
 ### Code Structure
 
 ```
-vicw_phase2/
+vicw_api/
 ├── app/
 │   ├── config.py                      # Configuration
 │   ├── data_models.py                 # Data classes
@@ -405,6 +426,62 @@ Next LLM generation:
 - Soft prevention: Warns LLM but doesn't force behavior
 - Fast: Rule-based pattern matching, no API calls
 
+### Advanced Loop Prevention: Boredom Detection & Echo Guard
+
+The system includes two additional mechanisms to prevent conversational loops:
+
+#### 1. Boredom Detection (State Visit Counting)
+
+Tracks how many times each state is injected into the context to detect when the LLM is stuck focusing on the same action repeatedly.
+
+**How it works**:
+- Each State node has `visit_count` and `last_visited` properties
+- Every time a state is injected into context, its `visit_count` increments
+- When `visit_count >= BOREDOM_THRESHOLD` (default: 5), a warning is injected:
+  ```
+  ⚠️ LOOP DETECTED: Repeated focus on [state_desc]. Consider concluding or exploring alternatives.
+  ```
+- Visit count resets to 0 when the state's status changes (e.g., active → completed)
+
+**Example**:
+```
+Turn 1-5: "Let's format Table 2.3" (visit_count: 1 → 2 → 3 → 4 → 5)
+Turn 6: Warning injected: "⚠️ LOOP DETECTED: Repeated focus on format Table 2.3"
+LLM sees warning and concludes the action or pivots to different task
+```
+
+#### 2. Echo Guard (Response Similarity Detection)
+
+Detects when the LLM generates nearly identical responses repeatedly and uses escalating interventions to force recovery.
+
+**How it works**:
+- After LLM generates a response, compute its embedding
+- Compare embedding with recent response history (last N responses stored in Redis)
+- If cosine similarity >= `ECHO_SIMILARITY_THRESHOLD` (default: 0.95):
+  - Discard the duplicate response (don't add to context)
+  - Inject escalating warning (progressively stronger with each retry)
+  - Regenerate immediately (up to `MAX_REGENERATION_ATTEMPTS`, default: 3)
+
+**Escalating Intervention Strategy**:
+
+1. **Retry #1 - Polite Warning**: Asks LLM to provide new information
+2. **Retry #2 - Forceful Directive**: Mandates specific response formats
+3. **Retry #3 - Emergency Override**: Strips all RAG context and forces conclusion
+
+**Critical difference from boredom detection**:
+- **Boredom detection**: Prevents repeated focus on same state (e.g., talking about Table 2.3 repeatedly)
+- **Echo guard**: Prevents identical responses (e.g., "Here is Table 2.3: [data]" appearing verbatim multiple times)
+
+**Example flow**:
+```
+Turn 1: LLM generates: "Here is Table 2.3: [data]"
+→ System embeds response → stores embedding → adds to context
+
+Turn 2: LLM generates same text: "Here is Table 2.3: [data]"
+→ System detects 0.98 similarity → discards response → injects warning → regenerates
+→ LLM tries different approach: "Table 2.3 has been provided. Let's proceed to the next section."
+```
+
 ## 🚨 Troubleshooting
 
 ### Common Issues
@@ -435,6 +512,31 @@ Next LLM generation:
 - **Solution**: Increase pattern coverage in `state_config.yaml`
 - **Solution**: Ensure RAG is enabled (`use_rag: true` in API calls)
 
+**Issue**: Boredom warnings not appearing
+- **Solution**: Verify `BOREDOM_DETECTION_ENABLED=true` in environment
+- **Solution**: Check `BOREDOM_THRESHOLD` setting (default: 5) - may be too high
+- **Solution**: Query Neo4j to check visit_count: `MATCH (s:State) RETURN s.desc, s.visit_count ORDER BY s.visit_count DESC`
+- **Solution**: Check logs for `BOREDOM_DETECTED` metrics
+- **Solution**: Lower threshold temporarily for testing: `BOREDOM_THRESHOLD=2`
+
+**Issue**: Echo guard not detecting duplicates
+- **Solution**: Verify `ECHO_GUARD_ENABLED=true` in environment
+- **Solution**: Check `ECHO_SIMILARITY_THRESHOLD` (default: 0.95) - may be too high
+- **Solution**: Lower threshold for testing: `ECHO_SIMILARITY_THRESHOLD=0.85`
+- **Solution**: Check logs for `ECHO_DETECTED` metrics
+- **Solution**: Verify embeddings are being generated (check semantic_manager logs)
+
+**Issue**: LLM keeps regenerating (too many echo detections)
+- **Solution**: Increase `ECHO_SIMILARITY_THRESHOLD` (e.g., 0.98) to be more strict
+- **Solution**: Reduce `ECHO_RESPONSE_HISTORY_SIZE` to compare against fewer responses
+- **Solution**: Temporarily disable echo guard: `ECHO_GUARD_ENABLED=false`
+
+**Issue**: Echo guard not breaking the loop (persistent repetition)
+- **Solution**: Enable aggressive mode: `ECHO_STRIP_CONTEXT_ON_RETRY=1` (strips RAG immediately)
+- **Solution**: Check logs for `ECHO_GUARD_RETRY` metrics to see actual similarity scores
+- **Solution**: Try reducing `ECHO_SIMILARITY_THRESHOLD` to 0.90 to catch near-duplicates
+- **Solution**: Verify warnings are reaching the LLM (check context window in logs)
+
 ### Debug Mode
 
 Enable detailed logging:
@@ -461,5 +563,4 @@ For questions or issues, please check the documentation or open an issue on GitH
 
 ---
 
-**VICW Phase 2** - Virtual Infinite Context Window with Hybrid Memory Architecture
-# vicw_a
+**VICW** - Virtual Infinite Context Window with Hybrid Memory Architecture
