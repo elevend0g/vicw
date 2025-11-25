@@ -68,10 +68,11 @@ class ContextManager:
             total += self._estimate_tokens(msg_text)
         return total
     
-    async def _create_placeholder_card(self, job_id: str, token_count: int, message_count: int) -> Dict[str, str]:
+    def _create_placeholder_card(self, job_id: str, token_count: int, message_count: int) -> Dict[str, str]:
         """
         Create a lightweight reference card for offloaded content.
         This is inserted in place of the removed messages.
+        V1.0: Synchronous (no async overhead) for faster pressure relief.
         """
         return {
             "role": "system",
@@ -139,7 +140,7 @@ class ContextManager:
         await self.offload_queue.enqueue(job)
         
         # Insert lightweight placeholder in context
-        placeholder = await self._create_placeholder_card(
+        placeholder = self._create_placeholder_card(
             job.job_id,
             extracted_tokens,
             len(extracted_messages)

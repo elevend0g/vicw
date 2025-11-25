@@ -61,6 +61,7 @@ Thumbs.db
 .coverage
 htmlcov/
 tests/
+development/
 
 # Jupyter
 .ipynb_checkpoints
@@ -69,4 +70,3 @@ tests/
 models/*
 .cache/
 CLAUDE.md
-system_prompt.txt

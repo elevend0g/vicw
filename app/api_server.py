@@ -77,6 +77,10 @@ redis_storage: Optional[RedisStorage] = None
 qdrant_db: Optional[QdrantVectorDB] = None
 neo4j_graph: Optional[Neo4jKnowledgeGraph] = None
 
+# Session state for single-user conversation tracking
+_session_lock = asyncio.Lock()  # Thread safety
+_last_processed_message_count = 0
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -544,16 +548,18 @@ async def stats():
 @app.post("/reset")
 async def reset_context():
     """Reset the context (useful for testing)"""
-    global context_manager
+    global context_manager, _last_processed_message_count
 
     if not context_manager:
         raise HTTPException(status_code=503, detail="Context manager not initialized")
 
     # Create new context manager
-    context_manager.working_context = []
-    context_manager.offload_job_count = 0
-    context_manager.placeholder_markers = {}
-    context_manager.last_relief_tokens = 0
+    async with _session_lock:
+        context_manager.working_context = []
+        context_manager.offload_job_count = 0
+        context_manager.placeholder_markers = {}
+        context_manager.last_relief_tokens = 0
+        _last_processed_message_count = 0  # Reset message counter
 
     logger.info("Context reset")
 
@@ -612,10 +618,33 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
 
         last_user_message = user_messages[-1].content
 
-        # Add all messages to context (clear and rebuild from OpenAI format)
-        # Note: For production, you may want to implement proper conversation tracking
-        # For now, we'll just process the last user message
-        await context_manager.add_message("user", last_user_message)
+        # Delta-based message processing
+        global _last_processed_message_count
+
+        async with _session_lock:
+            # Detect conversation reset (new chat in OpenWebUI)
+            current_message_count = len(request.messages)
+            if current_message_count < _last_processed_message_count:
+                # Clear context for new conversation
+                context_manager.working_context = []
+                context_manager.offload_job_count = 0
+                context_manager.placeholder_markers = {}
+                _last_processed_message_count = 0
+                logger.info(f"Conversation reset detected")
+
+            # Process only NEW messages (delta)
+            new_messages = request.messages[_last_processed_message_count:]
+            for msg in new_messages:
+                await context_manager.add_message(msg.role, msg.content)
+                logger.info(f"Added {msg.role} message ({len(msg.content)} chars)")
+
+            # Update counter
+            _last_processed_message_count = current_message_count
+
+            # Log pressure for monitoring
+            current_tokens = context_manager._token_count()
+            pressure_pct = (current_tokens / context_manager.max_context_tokens) * 100
+            logger.info(f"Context: {current_tokens} tokens ({pressure_pct:.1f}% pressure)")
 
         # Perform RAG (always enabled for OpenAI endpoint)
         rag_items = 0

@@ -7,6 +7,7 @@ import asyncio
 from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
+import zstandard as zstd
 
 from data_models import OffloadJob, OffloadResult, RAGResult
 from redis_storage import RedisStorage
@@ -38,7 +39,11 @@ class SemanticManager:
         self.qdrant_db = qdrant_db
         self.neo4j_graph = neo4j_graph
         self.executor = executor  # For CPU-bound operations like embedding
-        
+
+        # V1.0: Compression for full-text storage
+        self._compressor = zstd.ZstdCompressor(level=3)
+        self._decompressor = zstd.ZstdDecompressor()
+
         logger.info("SemanticManager initialized")
     
     def _summarize_sync(self, text: str) -> str:
@@ -135,10 +140,12 @@ class SemanticManager:
             if not redis_success:
                 logger.warning(f"Failed to store job {job.job_id} in Redis")
             
-            # Store in Qdrant (async I/O)
+            # Store in Qdrant with compressed full text (async I/O)
+            compressed = self._compressor.compress(job.chunk_text.encode('utf-8'))
             metadata = {
                 "job_id": job.job_id,
-                "summary": summary,
+                "chunk_text_compressed": compressed.hex(),
+                "summary": summary,  # keep for backwards compatibility
                 "token_count": job.token_count,
                 "timestamp": job.timestamp
             }
@@ -203,41 +210,46 @@ class SemanticManager:
     
     async def query_summaries(self, query_embedding: List[float], top_k: int = None) -> List[str]:
         """
-        Retrieve summaries using semantic search.
-        1. Search Qdrant for similar vectors
-        2. Fetch summaries from Redis
+        Retrieve full text using semantic search.
+        V1.0: Returns compressed full text, falls back to summaries for old data.
         """
         if top_k is None:
             top_k = RAG_TOP_K_SEMANTIC
-        
+
         start_time = time.time()
-        
+
         try:
-            # Search Qdrant for similar vectors
+            # Search Qdrant
             search_results = await self.qdrant_db.search(query_embedding, top_k=top_k)
-            
+
             if not search_results:
                 logger.info("No semantic search results found")
                 return []
-            
-            # Extract job_ids
-            job_ids = [result['job_id'] for result in search_results]
-            
-            # Fetch summaries from Redis
-            chunks = await self.redis_storage.get_chunks_by_ids(job_ids, fields=['summary'])
-            summaries = [chunk.get('summary', '') for chunk in chunks if chunk.get('summary')]
-            
+
+            chunks = []
+
+            for result in search_results:
+                payload = result.get('payload', {})
+
+                # Try compressed full text first (V1.0 data)
+                if payload.get('chunk_text_compressed'):
+                    try:
+                        compressed_bytes = bytes.fromhex(payload['chunk_text_compressed'])
+                        text = self._decompressor.decompress(compressed_bytes).decode('utf-8')
+                        chunks.append(text)
+                        continue
+                    except Exception as e:
+                        logger.warning(f"Decompression failed: {e}")
+                        # Fall through to summary fallback
+
+                # Fallback to summary for old data
+                if payload.get('summary'):
+                    chunks.append(payload['summary'])
+
             retrieval_time = (time.time() - start_time) * 1000
-            logger.info(f"Retrieved {len(summaries)} summaries in {retrieval_time:.2f}ms")
-            
-            metrics_logger.info(
-                f"SEMANTIC_RETRIEVAL | "
-                f"summaries={len(summaries)} | "
-                f"latency_ms={retrieval_time:.2f} | "
-                f"top_k={top_k}"
-            )
-            
-            return summaries
+            logger.info(f"Retrieved {len(chunks)} chunks in {retrieval_time:.2f}ms")
+
+            return chunks
             
         except Exception as e:
             logger.error(f"Error querying summaries: {e}")
