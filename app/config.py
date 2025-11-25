@@ -51,14 +51,6 @@ NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', 'password')
 # Embedding Model Configuration
 EMBEDDING_MODEL_NAME = os.getenv('EMBEDDING_MODEL_NAME', 'all-MiniLM-L6-v2')
 
-# Thread Limits (Must be set before imports)
-THREAD_CONFIG = {
-    'OMP_NUM_THREADS': os.getenv('OMP_NUM_THREADS', '2'),
-    'MKL_NUM_THREADS': os.getenv('MKL_NUM_THREADS', '2'),
-    'OPENBLAS_NUM_THREADS': os.getenv('OPENBLAS_NUM_THREADS', '2'),
-    'NUMEXPR_NUM_THREADS': os.getenv('NUMEXPR_NUM_THREADS', '2')
-}
-
 # Cold Path Configuration
 COLD_PATH_BATCH_SIZE = int(os.getenv('COLD_PATH_BATCH_SIZE', '3'))
 COLD_PATH_WORKERS = int(os.getenv('COLD_PATH_WORKERS', '4'))
@@ -93,9 +85,3 @@ ECHO_SIMILARITY_THRESHOLD = float(os.getenv('ECHO_SIMILARITY_THRESHOLD', '0.95')
 ECHO_RESPONSE_HISTORY_SIZE = int(os.getenv('ECHO_RESPONSE_HISTORY_SIZE', '10'))  # Number of recent responses to compare
 MAX_REGENERATION_ATTEMPTS = int(os.getenv('MAX_REGENERATION_ATTEMPTS', '3'))  # Max retries on duplicate detection
 ECHO_STRIP_CONTEXT_ON_RETRY = int(os.getenv('ECHO_STRIP_CONTEXT_ON_RETRY', '3'))  # Which retry to strip RAG context (1-3, default: 3)
-
-
-def apply_thread_config():
-    """Apply thread configuration to environment variables before heavy imports"""
-    for key, value in THREAD_CONFIG.items():
-        os.environ[key] = value

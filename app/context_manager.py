@@ -103,17 +103,26 @@ class ContextManager:
         extracted_messages = []
         
         # Extract messages until we've removed enough tokens
-        # Never extract pinned header or system messages
+        # Never extract the first message (pinned header at index 0)
         while extracted_tokens < tokens_to_extract and len(self.working_context) > 1:
-            # Find the first non-system message to extract (skip placeholders)
-            idx = 0
+            # Find the next extractable message (anything except index 0)
+            # Start from index 1 to protect the pinned header
+            idx = 1
+
+            # Prefer non-system messages first
             while idx < len(self.working_context) and self.working_context[idx]['role'] == 'system':
                 idx += 1
 
-            # If all remaining messages are system messages, we can't extract more
+            # If all remaining messages (except pinned header) are system messages,
+            # we'll extract system messages from index 1 onward if needed
             if idx >= len(self.working_context):
-                logger.warning("Cannot extract more: only system messages remain")
-                break
+                if len(self.working_context) > 1:
+                    # Extract the oldest system message (index 1)
+                    idx = 1
+                    logger.info("Extracting system message (placeholder/RAG result) to relieve pressure")
+                else:
+                    logger.warning("Cannot extract more: only pinned header remains")
+                    break
 
             # Extract the message at index idx
             msg = self.working_context.pop(idx)

@@ -5,9 +5,7 @@ import logging
 import asyncio
 from pathlib import Path
 
-# Set thread limits BEFORE imports
 from config import (
-    apply_thread_config,
     MAX_CONTEXT_TOKENS,
     REDIS_HOST,
     REDIS_PORT,
@@ -26,9 +24,7 @@ from config import (
     LOG_LEVEL
 )
 
-apply_thread_config()
-
-# Now import heavy libraries
+# Import heavy libraries
 from sentence_transformers import SentenceTransformer
 
 from context_manager import ContextManager

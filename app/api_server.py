@@ -14,9 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
-# Set thread limits BEFORE imports
 from config import (
-    apply_thread_config,
     API_HOST,
     API_PORT,
     API_TITLE,
@@ -44,9 +42,7 @@ from config import (
     ECHO_STRIP_CONTEXT_ON_RETRY
 )
 
-apply_thread_config()
-
-# Now import heavy libraries
+# Import heavy libraries
 from sentence_transformers import SentenceTransformer
 
 from context_manager import ContextManager
@@ -643,7 +639,7 @@ async def openai_chat_completions(request: OpenAIChatCompletionRequest):
 
             # Log pressure for monitoring
             current_tokens = context_manager._token_count()
-            pressure_pct = (current_tokens / context_manager.max_context_tokens) * 100
+            pressure_pct = (current_tokens / context_manager.max_context) * 100
             logger.info(f"Context: {current_tokens} tokens ({pressure_pct:.1f}% pressure)")
 
         # Perform RAG (always enabled for OpenAI endpoint)
