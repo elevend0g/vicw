@@ -204,7 +204,27 @@ async def startup_event():
         
         # Initialize embedding model
         logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}...")
-        embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        
+        from config import EMBEDDING_MODEL_TYPE, EMBEDDING_MODEL_PATH
+        
+        if EMBEDDING_MODEL_TYPE == 'llama_cpp':
+            try:
+                from llama_cpp import Llama
+                # Initialize Llama for embeddings
+                embedding_model = Llama(
+                    model_path=EMBEDDING_MODEL_PATH,
+                    embedding=True,
+                    verbose=False
+                )
+                logger.info(f"Loaded GGUF model from {EMBEDDING_MODEL_PATH}")
+            except ImportError:
+                logger.error("llama-cpp-python not installed. Falling back to SentenceTransformer.")
+                embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+            except Exception as e:
+                logger.error(f"Failed to load GGUF model: {e}. Falling back to SentenceTransformer.")
+                embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        else:
+            embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
         
         # Initialize offload queue
         offload_queue = OffloadQueue()

@@ -69,6 +69,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./system_prompt.txt:/app/system_prompt.txt:ro
+      - ./models:/app/models:ro
     restart: unless-stopped
     networks:
       - vicw_network
