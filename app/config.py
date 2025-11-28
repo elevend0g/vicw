@@ -41,7 +41,7 @@ REDIS_CHUNK_TTL = int(os.getenv('REDIS_CHUNK_TTL', '86400'))  # 24 hours
 QDRANT_HOST = os.getenv('QDRANT_HOST', 'localhost')
 QDRANT_PORT = int(os.getenv('QDRANT_PORT', '6333'))
 QDRANT_COLLECTION = os.getenv('QDRANT_COLLECTION', 'vicw_memory')
-EMBEDDING_DIMENSION = int(os.getenv('EMBEDDING_DIMENSION', '384'))  # all-MiniLM-L6-v2
+EMBEDDING_DIMENSION = int(os.getenv('EMBEDDING_DIMENSION', '1024'))  # Qwen3-Embedding-0.6B
 
 # Neo4j Configuration
 NEO4J_URI = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
@@ -49,7 +49,10 @@ NEO4J_USER = os.getenv('NEO4J_USER', 'neo4j')
 NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', 'password')
 
 # Embedding Model Configuration
-EMBEDDING_MODEL_NAME = os.getenv('EMBEDDING_MODEL_NAME', 'all-MiniLM-L6-v2')
+# Embedding Model Configuration
+EMBEDDING_MODEL_TYPE = os.getenv('EMBEDDING_MODEL_TYPE', 'llama_cpp') # 'sentence_transformer' or 'llama_cpp'
+EMBEDDING_MODEL_NAME = os.getenv('EMBEDDING_MODEL_NAME', 'qwen3-embedding-0.6b-q8_0.gguf')
+EMBEDDING_MODEL_PATH = os.getenv('EMBEDDING_MODEL_PATH', 'models/qwen3-embedding-0.6b-q8_0.gguf')
 
 # Cold Path Configuration
 COLD_PATH_BATCH_SIZE = int(os.getenv('COLD_PATH_BATCH_SIZE', '3'))

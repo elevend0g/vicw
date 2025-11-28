@@ -185,3 +185,137 @@ class State:
             visit_count=0,
             last_visited=0.0
         )
+
+
+# --- Metaphysical Schema Models ---
+
+@dataclass
+class ContextNode:
+    """Root node for a domain (e.g., 'Python Project Alpha', 'Fantasy Novel')"""
+    uid: str
+    name: str
+    domain: str  # High-level filter key (e.g., "coding", "prose")
+    description: str
+    created_at: float = field(default_factory=time.time)
+
+    @classmethod
+    def create(cls, name: str, domain: str, description: str = ""):
+        return cls(
+            uid=str(uuid.uuid4()),
+            name=name,
+            domain=domain,
+            description=description
+        )
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class EntityNode:
+    """Nouns: Objects, people, variables, files, places"""
+    uid: str
+    name: str
+    subtype: str  # Granular type (e.g., "function", "villain")
+    domain: str
+    qdrant_id: Optional[str] = None
+    description: str = ""
+    created_at: float = field(default_factory=time.time)
+
+    @classmethod
+    def create(cls, name: str, subtype: str, domain: str, description: str = "", qdrant_id: str = None):
+        return cls(
+            uid=str(uuid.uuid4()),
+            name=name,
+            subtype=subtype,
+            domain=domain,
+            qdrant_id=qdrant_id,
+            description=description
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class EventNode:
+    """Actions: Things that happen at a point in time"""
+    uid: str
+    name: str
+    subtype: str
+    domain: str
+    timestamp: float  # Real-world time of the event
+    flow_id: str  # Logical thread ID
+    flow_step: int  # Incrementing integer for sequence
+    qdrant_id: Optional[str] = None
+    description: str = ""
+    created_at: float = field(default_factory=time.time)
+
+    @classmethod
+    def create(cls, name: str, subtype: str, domain: str, flow_id: str, flow_step: int, timestamp: float = None, description: str = "", qdrant_id: str = None):
+        return cls(
+            uid=str(uuid.uuid4()),
+            name=name,
+            subtype=subtype,
+            domain=domain,
+            timestamp=timestamp or time.time(),
+            flow_id=flow_id,
+            flow_step=flow_step,
+            qdrant_id=qdrant_id,
+            description=description
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ConceptNode:
+    """Abstract ideas: Genres, design patterns, emotions"""
+    uid: str
+    name: str
+    subtype: str
+    domain: str
+    qdrant_id: Optional[str] = None
+    description: str = ""
+    created_at: float = field(default_factory=time.time)
+
+    @classmethod
+    def create(cls, name: str, subtype: str, domain: str, description: str = "", qdrant_id: str = None):
+        return cls(
+            uid=str(uuid.uuid4()),
+            name=name,
+            subtype=subtype,
+            domain=domain,
+            qdrant_id=qdrant_id,
+            description=description
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ChunkNode:
+    """Proof: The raw text snippet or file source"""
+    uid: str
+    content: str
+    source: str  # Filename or "chat"
+    domain: str
+    token_count: int
+    qdrant_id: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+
+    @classmethod
+    def create(cls, content: str, source: str, domain: str, token_count: int, qdrant_id: str = None):
+        return cls(
+            uid=str(uuid.uuid4()),
+            content=content,
+            source=source,
+            domain=domain,
+            token_count=token_count,
+            qdrant_id=qdrant_id
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)

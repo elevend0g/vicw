@@ -120,14 +120,42 @@ class QdrantVectorDB:
             # Extract the original job_id from payload (stored as _job_id during upsert)
             payload = hit.payload or {}
             job_id = payload.get("_job_id", str(hit.id))  # Fallback to UUID if _job_id missing
+            
+            # Also try to get node_id from payload (new schema)
+            node_id = payload.get("node_id")
 
             results.append({
                 "job_id": job_id,
+                "node_id": node_id,
                 "score": hit.score,
                 "payload": payload
             })
 
         return results
+    
+    def create_filter(self, must_conditions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Helper to create Qdrant filters.
+        Example:
+            must_conditions = [
+                {"key": "domain", "match": {"value": "coding"}},
+                {"key": "subtype", "match": {"value": "method"}}
+            ]
+        """
+        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+
+        conditions = []
+        for cond in must_conditions:
+            key = cond["key"]
+            value = cond["match"]["value"]
+            conditions.append(
+                FieldCondition(
+                    key=key,
+                    match=MatchValue(value=value)
+                )
+            )
+        
+        return Filter(must=conditions)
     
     async def get_vector(self, job_id: str) -> Optional[Dict]:
         """Retrieve a specific vector point by job_id"""

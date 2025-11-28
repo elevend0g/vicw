@@ -209,24 +209,6 @@ async def startup_event():
         # Initialize offload queue
         offload_queue = OffloadQueue()
         
-        # Initialize semantic manager
-        logger.info("Initializing semantic manager...")
-        semantic_manager = SemanticManager(
-            embedding_model=embedding_model,
-            redis_storage=redis_storage,
-            qdrant_db=qdrant_db,
-            neo4j_graph=neo4j_graph
-        )
-        
-        # Initialize context manager
-        logger.info("Initializing context manager...")
-        context_manager = ContextManager(
-            max_context=MAX_CONTEXT_TOKENS,
-            offload_queue=offload_queue,
-            embedding_model=embedding_model,
-            semantic_manager=semantic_manager
-        )
-        
         # Initialize external LLM
         logger.info(f"Initializing external LLM: {EXTERNAL_MODEL_NAME}...")
         if not EXTERNAL_API_KEY:
@@ -238,6 +220,25 @@ async def startup_event():
             model_name=EXTERNAL_MODEL_NAME
         )
         await llm.init()
+
+        # Initialize semantic manager
+        logger.info("Initializing semantic manager...")
+        semantic_manager = SemanticManager(
+            embedding_model=embedding_model,
+            redis_storage=redis_storage,
+            qdrant_db=qdrant_db,
+            neo4j_graph=neo4j_graph,
+            llm_client=llm
+        )
+        
+        # Initialize context manager
+        logger.info("Initializing context manager...")
+        context_manager = ContextManager(
+            max_context=MAX_CONTEXT_TOKENS,
+            offload_queue=offload_queue,
+            embedding_model=embedding_model,
+            semantic_manager=semantic_manager
+        )
         
         # Initialize and start cold path worker
         logger.info("Starting cold path worker...")

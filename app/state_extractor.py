@@ -134,6 +134,61 @@ class StateExtractor:
 
         return description
 
+    async def extract_metaphysical_graph(self, text: str, context_domain: str, llm_client: Any = None) -> Dict[str, Any]:
+        """
+        Extract Entities and Events using LLM with SPO prompting.
+        Returns a dict with 'entities' and 'events' lists.
+        """
+        if not llm_client:
+            logger.warning("No LLM client provided for metaphysical extraction")
+            return {"entities": [], "events": []}
+
+        system_prompt = """You are a Knowledge Graph Extractor.
+        Extract 'Entities' (nouns/objects) and 'Events' (actions/occurrences) from the text.
+        
+        Output JSON format:
+        {
+            "entities": [
+                {"name": "EntityName", "subtype": "type", "description": "brief desc"}
+            ],
+            "events": [
+                {"name": "EventName", "subtype": "type", "description": "brief desc", "caused_by": ["EntityName"], "next_event": "EventName"}
+            ]
+        }
+        """
+
+        user_prompt = f"""
+        Domain: {context_domain}
+        Text:
+        {text}
+        """
+
+        try:
+            response = await llm_client.generate(
+                context=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            import json
+            # Clean up response (remove markdown code blocks if present)
+            cleaned_response = response.strip()
+            if cleaned_response.startswith("```json"):
+                cleaned_response = cleaned_response[7:]
+            if cleaned_response.startswith("```"):
+                cleaned_response = cleaned_response[3:]
+            if cleaned_response.endswith("```"):
+                cleaned_response = cleaned_response[:-3]
+            
+            data = json.loads(cleaned_response.strip())
+            return data
+            
+        except Exception as e:
+            logger.error(f"Error in metaphysical extraction: {e}")
+            return {"entities": [], "events": []}
+
     def reload_config(self):
         """Reload configuration from file"""
         self._load_config()

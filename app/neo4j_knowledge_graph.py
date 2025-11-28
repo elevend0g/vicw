@@ -2,6 +2,7 @@
 
 import logging
 import asyncio
+import time
 from typing import List, Dict, Any
 from neo4j import AsyncGraphDatabase, AsyncDriver
 
@@ -43,44 +44,162 @@ class Neo4jKnowledgeGraph:
         """Create uniqueness constraints and indexes"""
         async with self._driver.session() as session:
             try:
+                # --- Metaphysical Schema Constraints ---
+                
+                # Context uniqueness
+                await session.run(
+                    "CREATE CONSTRAINT context_uid_unique IF NOT EXISTS "
+                    "FOR (c:Context) REQUIRE c.uid IS UNIQUE"
+                )
+                
                 # Entity uniqueness
                 await session.run(
-                    "CREATE CONSTRAINT entity_name_unique IF NOT EXISTS "
-                    "FOR (e:Entity) REQUIRE e.name IS UNIQUE"
+                    "CREATE CONSTRAINT entity_uid_unique IF NOT EXISTS "
+                    "FOR (e:Entity) REQUIRE e.uid IS UNIQUE"
+                )
+                
+                # Event uniqueness
+                await session.run(
+                    "CREATE CONSTRAINT event_uid_unique IF NOT EXISTS "
+                    "FOR (e:Event) REQUIRE e.uid IS UNIQUE"
+                )
+                
+                # Concept uniqueness
+                await session.run(
+                    "CREATE CONSTRAINT concept_uid_unique IF NOT EXISTS "
+                    "FOR (c:Concept) REQUIRE c.uid IS UNIQUE"
                 )
                 
                 # Chunk uniqueness
                 await session.run(
-                    "CREATE CONSTRAINT chunk_id_unique IF NOT EXISTS "
-                    "FOR (c:Chunk) REQUIRE c.job_id IS UNIQUE"
+                    "CREATE CONSTRAINT chunk_uid_unique IF NOT EXISTS "
+                    "FOR (c:Chunk) REQUIRE c.uid IS UNIQUE"
                 )
 
-                # State uniqueness
+                # Legacy constraints (keeping for safety, though we might migrate away)
                 await session.run(
                     "CREATE CONSTRAINT state_id_unique IF NOT EXISTS "
                     "FOR (s:State) REQUIRE s.id IS UNIQUE"
                 )
 
-                # Create indexes for performance
-                await session.run(
-                    "CREATE INDEX entity_name_idx IF NOT EXISTS FOR (e:Entity) ON (e.name)"
-                )
-
-                await session.run(
-                    "CREATE INDEX state_type_status_idx IF NOT EXISTS FOR (s:State) ON (s.type, s.status)"
-                )
-
-                await session.run(
-                    "CREATE INDEX state_visit_count_idx IF NOT EXISTS FOR (s:State) ON (s.visit_count)"
-                )
-
-                await session.run(
-                    "CREATE INDEX chunk_timestamp_idx IF NOT EXISTS FOR (c:Chunk) ON (c.processed_at)"
-                )
+                # --- Indexes for Performance ---
+                
+                # Name lookups
+                await session.run("CREATE INDEX entity_name_idx IF NOT EXISTS FOR (e:Entity) ON (e.name)")
+                await session.run("CREATE INDEX event_name_idx IF NOT EXISTS FOR (e:Event) ON (e.name)")
+                await session.run("CREATE INDEX concept_name_idx IF NOT EXISTS FOR (c:Concept) ON (c.name)")
+                
+                # Domain filtering
+                await session.run("CREATE INDEX entity_domain_idx IF NOT EXISTS FOR (e:Entity) ON (e.domain)")
+                await session.run("CREATE INDEX event_domain_idx IF NOT EXISTS FOR (e:Event) ON (e.domain)")
+                
+                # Time-based lookups
+                await session.run("CREATE INDEX event_timestamp_idx IF NOT EXISTS FOR (e:Event) ON (e.timestamp)")
+                
+                # Flow lookups
+                await session.run("CREATE INDEX event_flow_idx IF NOT EXISTS FOR (e:Event) ON (e.flow_id, e.flow_step)")
 
                 logger.info("Neo4j constraints and indexes initialized")
             except Exception as e:
                 logger.warning(f"Error creating constraints (may already exist): {e}")
+
+    # --- Metaphysical Node Creation Methods ---
+
+    async def create_context_node(self, node_dict: Dict[str, Any]) -> None:
+        """Create a Context node"""
+        query = """
+        MERGE (c:Context {uid: $uid})
+        SET c += $props
+        """
+        # Exclude uid from props since it's used in MERGE
+        props = {k: v for k, v in node_dict.items() if k != 'uid'}
+        
+        async with self._driver.session() as session:
+            await session.run(query, parameters={"uid": node_dict['uid'], "props": props})
+            logger.debug(f"Created Context node: {node_dict.get('name')}")
+
+    async def create_entity_node(self, node_dict: Dict[str, Any]) -> None:
+        """Create an Entity node"""
+        query = """
+        MERGE (e:Entity {uid: $uid})
+        SET e += $props
+        """
+        props = {k: v for k, v in node_dict.items() if k != 'uid'}
+        
+        async with self._driver.session() as session:
+            await session.run(query, parameters={"uid": node_dict['uid'], "props": props})
+            logger.debug(f"Created Entity node: {node_dict.get('name')}")
+
+    async def create_event_node(self, node_dict: Dict[str, Any]) -> None:
+        """Create an Event node"""
+        query = """
+        MERGE (e:Event {uid: $uid})
+        SET e += $props
+        """
+        props = {k: v for k, v in node_dict.items() if k != 'uid'}
+        
+        async with self._driver.session() as session:
+            await session.run(query, parameters={"uid": node_dict['uid'], "props": props})
+            logger.debug(f"Created Event node: {node_dict.get('name')}")
+
+    async def create_concept_node(self, node_dict: Dict[str, Any]) -> None:
+        """Create a Concept node"""
+        query = """
+        MERGE (c:Concept {uid: $uid})
+        SET c += $props
+        """
+        props = {k: v for k, v in node_dict.items() if k != 'uid'}
+        
+        async with self._driver.session() as session:
+            await session.run(query, parameters={"uid": node_dict['uid'], "props": props})
+            logger.debug(f"Created Concept node: {node_dict.get('name')}")
+
+    async def create_chunk_node(self, node_dict: Dict[str, Any]) -> None:
+        """Create a Chunk node"""
+        query = """
+        MERGE (c:Chunk {uid: $uid})
+        SET c += $props
+        """
+        props = {k: v for k, v in node_dict.items() if k != 'uid'}
+        
+        async with self._driver.session() as session:
+            await session.run(query, parameters={"uid": node_dict['uid'], "props": props})
+            logger.debug(f"Created Chunk node: {node_dict.get('uid')}")
+
+    # --- Metaphysical Relationship Methods ---
+
+    async def create_metaphysical_relationship(
+        self, 
+        start_uid: str, 
+        start_label: str, 
+        end_uid: str, 
+        end_label: str, 
+        rel_type: str, 
+        props: Dict[str, Any] = None
+    ) -> None:
+        """Generic method to create relationships between metaphysical nodes"""
+        # Sanitize labels to prevent injection (though internal use only)
+        valid_labels = {"Context", "Entity", "Event", "Concept", "Chunk"}
+        if start_label not in valid_labels or end_label not in valid_labels:
+            raise ValueError(f"Invalid labels: {start_label}, {end_label}")
+        
+        query = f"""
+        MATCH (a:{start_label} {{uid: $start_uid}})
+        MATCH (b:{end_label} {{uid: $end_uid}})
+        MERGE (a)-[r:{rel_type}]->(b)
+        SET r += $props
+        """
+        
+        async with self._driver.session() as session:
+            await session.run(
+                query, 
+                parameters={
+                    "start_uid": start_uid, 
+                    "end_uid": end_uid, 
+                    "props": props or {}
+                }
+            )
+            logger.debug(f"Created relationship: ({start_label})-[{rel_type}]->({end_label})")
     
     async def update_chunk_node(self, job_id: str, summary: str, token_count: int) -> None:
         """
@@ -253,78 +372,145 @@ class Neo4jKnowledgeGraph:
             except Exception as e:
                 logger.error(f"Error creating relationship: {e}")
     
-    async def relational_query(self, query_text: str, limit: int = 5) -> List[str]:
+    async def expand_metaphysical_context(self, node_uids: List[str]) -> List[Dict[str, Any]]:
         """
-        HOT PATH: Query the graph for relevant relationships.
-        Returns formatted relationship strings for context injection.
+        Expand context from a list of starting node UIDs.
+        Traverses:
+        - 1 Hop outgoing via [:CAUSED] (Consequences)
+        - 1 Hop incoming via [:INITIATED] (Agents/Causes)
+        - 1 Hop linear via [:NEXT] (Sequence)
         """
-        # Extract potential keywords from query (capitalized words)
-        import re
-        keywords = re.findall(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', query_text)
+        if not node_uids:
+            return []
 
-        # Also include significant lowercase words
-        significant_words = [word for word in query_text.split()
-                           if len(word) > 3 and word.lower() not in
-                           {'about', 'tell', 'what', 'when', 'where', 'how', 'why', 'who', 'the', 'this', 'that'}]
-
-        # Combine keywords and significant words
-        search_terms = keywords + significant_words
-
-        if not search_terms:
-            # Fallback to using the whole query if no keywords extracted
-            search_terms = [query_text]
-
+        query = """
+        MATCH (start)
+        WHERE start.uid IN $uids
+        
+        // 1. Direct Consequences
+        OPTIONAL MATCH (start)-[r1:CAUSED]->(consequence)
+        
+        // 2. Agents/Causes
+        OPTIONAL MATCH (agent)-[r2:INITIATED]->(start)
+        
+        // 3. Next Steps
+        OPTIONAL MATCH (start)-[r3:NEXT]->(next_step)
+        
+        RETURN 
+            start,
+            collect(DISTINCT {rel: "CAUSED", target: consequence}) as consequences,
+            collect(DISTINCT {rel: "INITIATED_BY", target: agent}) as agents,
+            collect(DISTINCT {rel: "NEXT", target: next_step}) as next_steps
+        """
+        
         async with self._driver.session() as session:
             try:
-                all_results = []
-
-                # Search for each term
-                for term in search_terms[:3]:  # Limit to first 3 terms to avoid too many queries
-                    cql_query = """
-                    MATCH (n)-[r]->(m)
-                    WHERE toLower(coalesce(n.name, '')) CONTAINS toLower($query)
-                       OR toLower(coalesce(m.name, '')) CONTAINS toLower($query)
-                       OR toLower(coalesce(n.summary, '')) CONTAINS toLower($query)
-                       OR toLower(coalesce(m.summary, '')) CONTAINS toLower($query)
-                    RETURN n, type(r) AS relationship, m
-                    LIMIT $limit
-                    """
-
-                    result = await session.run(
-                        cql_query,
-                        parameters={"query": term, "limit": limit}
-                    )
-
-                    async for record in result:
-                        # Extract node names
-                        n = record['n']
-                        m = record['m']
-                        r_type = record['relationship']
-
-                        # Get node names or labels
-                        n_name = n.get('name', n.get('summary', list(n.labels)[0] if n.labels else 'Node'))
-                        m_name = m.get('name', m.get('summary', list(m.labels)[0] if m.labels else 'Node'))
-
-                        # Truncate long summaries
-                        if len(n_name) > 50:
-                            n_name = n_name[:47] + "..."
-                        if len(m_name) > 50:
-                            m_name = m_name[:47] + "..."
-
-                        # Format as relationship triple
-                        fact = f"({n_name})-[:{r_type}]->({m_name})"
-                        if fact not in all_results:  # Avoid duplicates
-                            all_results.append(fact)
-
-                # Limit total results
-                structured_data = all_results[:limit]
-
-                logger.info(f"Relational query for '{query_text}' (terms: {search_terms[:3]}) returned {len(structured_data)} facts")
-                return structured_data
-
+                result = await session.run(query, parameters={"uids": node_uids})
+                
+                expanded_context = []
+                async for record in result:
+                    start_node = dict(record['start'])
+                    
+                    # Process relationships
+                    relationships = []
+                    
+                    for item in record['consequences']:
+                        if item['target']:
+                            relationships.append(f"CAUSED -> {item['target'].get('name')} ({item['target'].get('subtype')})")
+                            
+                    for item in record['agents']:
+                        if item['target']:
+                            relationships.append(f"INITIATED BY <- {item['target'].get('name')} ({item['target'].get('subtype')})")
+                            
+                    for item in record['next_steps']:
+                        if item['target']:
+                            relationships.append(f"NEXT -> {item['target'].get('name')} ({item['target'].get('subtype')})")
+                    
+                    expanded_context.append({
+                        "node": start_node,
+                        "relationships": relationships
+                    })
+                    
+                return expanded_context
+                
             except Exception as e:
-                logger.error(f"Error in relational query: {e}")
+                logger.error(f"Error expanding metaphysical context: {e}")
                 return []
+
+    async def get_old_events(self, hours: int = 1, limit: int = 100) -> List[Dict[str, Any]]:
+        """
+        Find Event nodes older than 'hours' that are not yet consolidated.
+        """
+        # Calculate cutoff timestamp (assuming timestamp is unix epoch or ISO string)
+        # If timestamp is ISO string, we can use datetime.
+        # But here we assume timestamp is stored as float/int or string.
+        # Let's assume we use the 'created_at' or 'timestamp' property.
+        
+        query = """
+        MATCH (e:Event)
+        WHERE e.timestamp < $cutoff_timestamp
+          AND NOT (e)-[:CONSOLIDATED_INTO]->(:MacroEvent)
+        RETURN e
+        ORDER BY e.timestamp ASC
+        LIMIT $limit
+        """
+        
+        # Calculate cutoff. Assuming timestamp is float (seconds since epoch)
+        cutoff = time.time() - (hours * 3600)
+        
+        async with self._driver.session() as session:
+            try:
+                result = await session.run(query, parameters={"cutoff_timestamp": cutoff, "limit": limit})
+                events = []
+                async for record in result:
+                    events.append(dict(record['e']))
+                return events
+            except Exception as e:
+                logger.error(f"Error getting old events: {e}")
+                return []
+
+    async def create_macro_event(self, macro_event_data: Dict[str, Any]) -> str:
+        """
+        Create a MacroEvent node.
+        """
+        query = """
+        MERGE (m:MacroEvent {uid: $uid})
+        SET m += $props, m.created_at = timestamp()
+        RETURN m.uid
+        """
+        
+        uid = macro_event_data.get("uid")
+        if not uid:
+            uid = str(uuid.uuid4())
+            macro_event_data["uid"] = uid
+            
+        async with self._driver.session() as session:
+            try:
+                await session.run(query, parameters={"uid": uid, "props": macro_event_data})
+                logger.info(f"Created MacroEvent {uid}")
+                return uid
+            except Exception as e:
+                logger.error(f"Error creating MacroEvent: {e}")
+                return None
+
+    async def consolidate_events(self, event_uids: List[str], macro_event_uid: str):
+        """
+        Link events to MacroEvent and mark them as consolidated.
+        Optionally delete them if pruning is enabled (here we just link).
+        """
+        query = """
+        MATCH (m:MacroEvent {uid: $macro_uid})
+        MATCH (e:Event)
+        WHERE e.uid IN $event_uids
+        MERGE (e)-[:CONSOLIDATED_INTO]->(m)
+        """
+        
+        async with self._driver.session() as session:
+            try:
+                await session.run(query, parameters={"macro_uid": macro_event_uid, "event_uids": event_uids})
+                logger.info(f"Consolidated {len(event_uids)} events into {macro_event_uid}")
+            except Exception as e:
+                logger.error(f"Error consolidating events: {e}")
     
     async def get_entity_context(self, entity_name: str) -> Dict[str, Any]:
         """Get all relationships and properties for an entity"""

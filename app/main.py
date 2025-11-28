@@ -92,28 +92,30 @@ async def main():
         
         # Initialize embedding model
         logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}...")
-        embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        
+        from config import EMBEDDING_MODEL_TYPE, EMBEDDING_MODEL_PATH
+        
+        if EMBEDDING_MODEL_TYPE == 'llama_cpp':
+            try:
+                from llama_cpp import Llama
+                # Initialize Llama for embeddings
+                embedding_model = Llama(
+                    model_path=EMBEDDING_MODEL_PATH,
+                    embedding=True,
+                    verbose=False
+                )
+                logger.info(f"Loaded GGUF model from {EMBEDDING_MODEL_PATH}")
+            except ImportError:
+                logger.error("llama-cpp-python not installed. Falling back to SentenceTransformer.")
+                embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+            except Exception as e:
+                logger.error(f"Failed to load GGUF model: {e}. Falling back to SentenceTransformer.")
+                embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+        else:
+            embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
         
         # Initialize offload queue
         offload_queue = OffloadQueue()
-        
-        # Initialize semantic manager
-        logger.info("Initializing semantic manager...")
-        semantic_manager = SemanticManager(
-            embedding_model=embedding_model,
-            redis_storage=redis_storage,
-            qdrant_db=qdrant_db,
-            neo4j_graph=neo4j_graph
-        )
-        
-        # Initialize context manager
-        logger.info("Initializing context manager...")
-        context_manager = ContextManager(
-            max_context=MAX_CONTEXT_TOKENS,
-            offload_queue=offload_queue,
-            embedding_model=embedding_model,
-            semantic_manager=semantic_manager
-        )
         
         # Initialize external LLM
         logger.info(f"Initializing external LLM: {EXTERNAL_MODEL_NAME}...")
@@ -126,6 +128,25 @@ async def main():
             model_name=EXTERNAL_MODEL_NAME
         )
         await llm.init()
+
+        # Initialize semantic manager
+        logger.info("Initializing semantic manager...")
+        semantic_manager = SemanticManager(
+            embedding_model=embedding_model,
+            redis_storage=redis_storage,
+            qdrant_db=qdrant_db,
+            neo4j_graph=neo4j_graph,
+            llm_client=llm
+        )
+        
+        # Initialize context manager
+        logger.info("Initializing context manager...")
+        context_manager = ContextManager(
+            max_context=MAX_CONTEXT_TOKENS,
+            offload_queue=offload_queue,
+            embedding_model=embedding_model,
+            semantic_manager=semantic_manager
+        )
         
         # Initialize and start cold path worker
         logger.info("Starting cold path worker...")
