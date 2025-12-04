@@ -3,7 +3,7 @@
 import logging
 import json
 from typing import List, Dict, Any, Optional
-import redis.asyncio as redis
+import redis
 
 from data_models import OffloadJob
 from config import REDIS_CHUNK_TTL
@@ -23,22 +23,40 @@ class RedisStorage:
         self.db = db
         self.redis: Optional[redis.Redis] = None
     
-    async def init(self):
-        """Initialize Redis connection"""
-        try:
-            self.redis = await redis.from_url(
-                f"redis://{self.host}:{self.port}/{self.db}",
-                encoding="utf-8",
-                decode_responses=True,
-                socket_timeout=5.0,
-                socket_connect_timeout=5.0
-            )
-            # Test connection
-            await self.redis.ping()
-            logger.info(f"Redis connected to {self.host}:{self.port}")
-        except Exception as e:
-            logger.error(f"Failed to connect to Redis: {e}")
-            raise
+    async def init(self, max_retries: int = 3, retry_delay: float = 1.0):
+        """Initialize Redis connection with retry logic - using synchronous Redis"""
+        import asyncio
+        import time
+
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Connecting to Redis at {self.host}:{self.port} (attempt {attempt + 1}/{max_retries})...")
+
+                # Use synchronous Redis (redis.asyncio has issues in some Docker environments)
+                self.redis = redis.Redis(
+                    host=self.host,
+                    port=self.port,
+                    db=self.db,
+                    encoding="utf-8",
+                    decode_responses=True,
+                    socket_timeout=5.0,
+                    socket_connect_timeout=5.0
+                )
+
+                # Test connection (synchronous)
+                self.redis.ping()
+                logger.info(f"✓ Redis connected successfully to {self.host}:{self.port}")
+                return
+
+            except Exception as e:
+                logger.warning(f"✗ Redis connection failed: {e}")
+
+                if attempt < max_retries - 1:
+                    logger.info(f"  Retrying in {retry_delay}s...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(f"Failed to connect to Redis after {max_retries} attempts")
+                    raise
     
     async def store_chunk(self, job: OffloadJob, summary: str) -> bool:
         """Store a chunk with summary in Redis"""
@@ -61,13 +79,13 @@ class RedisStorage:
             }
             
             # Store chunk as hash
-            await self.redis.hset(key, mapping=chunk_data)
+            self.redis.hset(key, mapping=chunk_data)
             
             # Set TTL
-            await self.redis.expire(key, REDIS_CHUNK_TTL)
+            self.redis.expire(key, REDIS_CHUNK_TTL)
             
             # Add to index (sorted set by timestamp)
-            await self.redis.zadd(self.CHUNK_INDEX_KEY, {job.job_id: job.timestamp})
+            self.redis.zadd(self.CHUNK_INDEX_KEY, {job.job_id: job.timestamp})
             
             logger.debug(f"Stored chunk {job.job_id} in Redis")
             return True
@@ -84,7 +102,7 @@ class RedisStorage:
         key = self.CHUNK_KEY_PREFIX + job_id
         
         try:
-            chunk = await self.redis.hgetall(key)
+            chunk = self.redis.hgetall(key)
             if chunk:
                 # Parse metadata
                 if 'metadata' in chunk:
@@ -113,8 +131,8 @@ class RedisStorage:
                     pipe.hmget(key, fields)
                 else:
                     pipe.hgetall(key)
-            
-            results = await pipe.execute()
+
+            results = pipe.execute()
             
             output = []
             for i, result in enumerate(results):
@@ -151,7 +169,7 @@ class RedisStorage:
         
         try:
             # Get most recent job_ids from sorted set
-            job_ids = await self.redis.zrevrange(self.CHUNK_INDEX_KEY, 0, limit - 1)
+            job_ids = self.redis.zrevrange(self.CHUNK_INDEX_KEY, 0, limit - 1)
             
             if not job_ids:
                 return []
@@ -172,10 +190,10 @@ class RedisStorage:
         
         try:
             # Delete from hash
-            await self.redis.delete(key)
+            self.redis.delete(key)
             
             # Remove from index
-            await self.redis.zrem(self.CHUNK_INDEX_KEY, job_id)
+            self.redis.zrem(self.CHUNK_INDEX_KEY, job_id)
             
             logger.debug(f"Deleted chunk {job_id} from Redis")
             return True
@@ -190,7 +208,7 @@ class RedisStorage:
             return 0
         
         try:
-            return await self.redis.zcard(self.CHUNK_INDEX_KEY)
+            return self.redis.zcard(self.CHUNK_INDEX_KEY)
         except Exception as e:
             logger.error(f"Error getting chunk count: {e}")
             return 0
@@ -198,5 +216,5 @@ class RedisStorage:
     async def shutdown(self):
         """Close Redis connection pool"""
         if self.redis:
-            await self.redis.close()
+            self.redis.close()
             logger.info("Redis connection closed")

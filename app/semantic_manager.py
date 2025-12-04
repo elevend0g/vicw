@@ -128,6 +128,7 @@ class SemanticManager:
         """
         Process a single offload job asynchronously.
         Ingestion Pipeline:
+        0. Store raw chunk in Redis (FIRST - preserve data even if processing fails)
         1. Extraction (LLM): Extract Entities and Events.
         2. Context Check: Identify active Context.
         3. Sequence Assignment: timestamp, flow_id, flow_step.
@@ -136,22 +137,38 @@ class SemanticManager:
         """
         job_start_time = time.time()
         logger.info(f"Processing offload job {job.job_id} ({job.token_count} tokens)")
-        
+
         try:
+            # 0. CRITICAL: Store raw chunk in Redis FIRST to prevent data loss
+            # If extraction fails, at least we have the raw text preserved
+            loop = asyncio.get_event_loop()
+            summary = await loop.run_in_executor(self.executor, self._summarize_sync, job.chunk_text)
+            stored = await self.redis_storage.store_chunk(job, summary)
+            if stored:
+                logger.info(f"Stored chunk {job.job_id} in Redis (raw text preserved)")
+            else:
+                logger.warning(f"Failed to store chunk {job.job_id} in Redis - continuing anyway")
+
             # 1. Extraction (LLM)
             # Determine domain from metadata or default
             domain = job.metadata.get("domain", "general")
-            
+
             extractor = get_extractor(STATE_CONFIG_PATH)
             # Use LLM client if available
             extraction_data = await extractor.extract_metaphysical_graph(
-                job.chunk_text, 
-                context_domain=domain, 
+                job.chunk_text,
+                context_domain=domain,
                 llm_client=self.llm_client
             )
-            
+
             entities = extraction_data.get("entities", [])
             events = extraction_data.get("events", [])
+
+            # Log extraction results
+            if not entities and not events:
+                logger.warning(f"Extraction returned no entities or events for job {job.job_id} (chunk stored in Redis)")
+            else:
+                logger.info(f"Extracted {len(entities)} entities and {len(events)} events from job {job.job_id}")
             
             # 2. Context Check (Simplified: create/merge Context node based on domain)
             context_uid = str(uuid.uuid5(uuid.NAMESPACE_DNS, domain))
@@ -497,16 +514,22 @@ class SemanticManager:
             key = "response_embeddings"
             value = json.dumps(embedding)
 
-            # Add to sorted set with timestamp as score
-            await self.redis_storage.redis.zadd(key, {value: timestamp})
+            # Run synchronous Redis operations in executor to avoid blocking
+            loop = asyncio.get_event_loop()
 
-            # Trim to keep only recent responses
-            # Keep the most recent N responses (highest scores)
-            await self.redis_storage.redis.zremrangebyrank(
-                key,
-                0,
-                -(ECHO_RESPONSE_HISTORY_SIZE + 1)
-            )
+            def _store_sync():
+                # Add to sorted set with timestamp as score
+                self.redis_storage.redis.zadd(key, {value: timestamp})
+
+                # Trim to keep only recent responses
+                # Keep the most recent N responses (highest scores)
+                self.redis_storage.redis.zremrangebyrank(
+                    key,
+                    0,
+                    -(ECHO_RESPONSE_HISTORY_SIZE + 1)
+                )
+
+            await loop.run_in_executor(None, _store_sync)
 
             logger.debug(f"Stored response embedding with timestamp {timestamp}")
             return True
@@ -531,14 +554,20 @@ class SemanticManager:
             if threshold is None:
                 threshold = ECHO_SIMILARITY_THRESHOLD
 
-            # Get recent response embeddings from Redis
-            key = "response_embeddings"
-            recent_responses = await self.redis_storage.redis.zrange(
-                key,
-                0,
-                -1,
-                withscores=False
-            )
+            # Run synchronous Redis operation in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+
+            def _get_recent_responses():
+                # Get recent response embeddings from Redis
+                key = "response_embeddings"
+                return self.redis_storage.redis.zrange(
+                    key,
+                    0,
+                    -1,
+                    withscores=False
+                )
+
+            recent_responses = await loop.run_in_executor(None, _get_recent_responses)
 
             if not recent_responses:
                 logger.debug("No previous responses to compare")

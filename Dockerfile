@@ -33,5 +33,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8000/health')" || exit 1
 
-# Run the API server
-CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the API server without uvloop (use asyncio instead)
+CMD ["uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "asyncio"]

@@ -171,7 +171,7 @@ class StateExtractor:
                 ],
                 response_format={"type": "json_object"}
             )
-            
+
             import json
             # Clean up response (remove markdown code blocks if present)
             cleaned_response = response.strip()
@@ -181,12 +181,17 @@ class StateExtractor:
                 cleaned_response = cleaned_response[3:]
             if cleaned_response.endswith("```"):
                 cleaned_response = cleaned_response[:-3]
-            
+
             data = json.loads(cleaned_response.strip())
             return data
-            
+
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parsing error in metaphysical extraction: {e}")
+            logger.error(f"Raw LLM response (first 500 chars): {response[:500] if 'response' in locals() else 'N/A'}")
+            return {"entities": [], "events": []}
         except Exception as e:
             logger.error(f"Error in metaphysical extraction: {e}")
+            logger.error(f"Raw LLM response (first 500 chars): {response[:500] if 'response' in locals() else 'N/A'}")
             return {"entities": [], "events": []}
 
     def reload_config(self):

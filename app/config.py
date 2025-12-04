@@ -51,8 +51,8 @@ NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', 'password')
 # Embedding Model Configuration
 # Embedding Model Configuration
 EMBEDDING_MODEL_TYPE = os.getenv('EMBEDDING_MODEL_TYPE', 'llama_cpp') # 'sentence_transformer' or 'llama_cpp'
-EMBEDDING_MODEL_NAME = os.getenv('EMBEDDING_MODEL_NAME', 'qwen3-embedding-0.6b-q8_0.gguf')
-EMBEDDING_MODEL_PATH = os.getenv('EMBEDDING_MODEL_PATH', 'models/qwen3-embedding-0.6b-q8_0.gguf')
+EMBEDDING_MODEL_NAME = os.getenv('EMBEDDING_MODEL_NAME', 'snowflake-arctic-embed-l-v2.0-q8_0.gguf')
+EMBEDDING_MODEL_PATH = os.getenv('EMBEDDING_MODEL_PATH', 'models/snowflake-arctic-embed-l-v2.0-q8_0.gguf')
 
 # Cold Path Configuration
 COLD_PATH_BATCH_SIZE = int(os.getenv('COLD_PATH_BATCH_SIZE', '3'))

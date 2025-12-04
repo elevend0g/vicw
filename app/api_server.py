@@ -42,8 +42,8 @@ from config import (
     ECHO_STRIP_CONTEXT_ON_RETRY
 )
 
-# Import heavy libraries
-from sentence_transformers import SentenceTransformer
+# NOTE: Heavy imports (SentenceTransformer) moved to startup function
+# to avoid blocking module import
 
 from context_manager import ContextManager
 from offload_queue import OffloadQueue
@@ -172,12 +172,16 @@ async def startup_event():
     """Initialize all VICW components on startup"""
     global context_manager, llm, cold_path_worker, offload_queue
     global redis_storage, qdrant_db, neo4j_graph
-    
+
     logger.info("=" * 60)
     logger.info("Starting VICW Phase 2 API Server")
     logger.info("=" * 60)
-    
+
     try:
+        # Small delay to ensure all services are fully ready for async connections
+        logger.info("Waiting for services to be fully ready...")
+        await asyncio.sleep(2)
+
         # Initialize Redis storage
         logger.info("Initializing Redis storage...")
         redis_storage = RedisStorage(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
@@ -204,9 +208,9 @@ async def startup_event():
         
         # Initialize embedding model
         logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}...")
-        
+
         from config import EMBEDDING_MODEL_TYPE, EMBEDDING_MODEL_PATH
-        
+
         if EMBEDDING_MODEL_TYPE == 'llama_cpp':
             try:
                 from llama_cpp import Llama
@@ -219,11 +223,14 @@ async def startup_event():
                 logger.info(f"Loaded GGUF model from {EMBEDDING_MODEL_PATH}")
             except ImportError:
                 logger.error("llama-cpp-python not installed. Falling back to SentenceTransformer.")
+                from sentence_transformers import SentenceTransformer
                 embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
             except Exception as e:
                 logger.error(f"Failed to load GGUF model: {e}. Falling back to SentenceTransformer.")
+                from sentence_transformers import SentenceTransformer
                 embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
         else:
+            from sentence_transformers import SentenceTransformer
             embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
         
         # Initialize offload queue
