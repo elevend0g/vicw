@@ -35,6 +35,9 @@ services:
       - MAX_CONTEXT_TOKENS=${MAX_CONTEXT_TOKENS:-4096}
       - OFFLOAD_THRESHOLD=${OFFLOAD_THRESHOLD:-0.80}
 
+      # RAG Configuration
+      - RAG_SCORE_THRESHOLD=${RAG_SCORE_THRESHOLD:-0.4}
+
       # State Tracking Configuration
       - STATE_TRACKING_ENABLED=${STATE_TRACKING_ENABLED:-true}
 

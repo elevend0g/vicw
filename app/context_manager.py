@@ -232,20 +232,34 @@ class ContextManager:
 
         rag_start_time = time.time()
 
+        # Log RAG invocation
+        logger.info(f"RAG invocation: query='{query_text[:80]}...', top_k_semantic={top_k_semantic}, top_k_relational={top_k_relational}")
+
         try:
             # 0. Remove previous RAG/state system messages to prevent accumulation
             # Keep only user/assistant messages and placeholders
+            pre_cleanup_count = len(self.working_context)
             self.working_context = [
                 msg for msg in self.working_context
                 if msg['role'] != 'system' or msg['content'].startswith('[ARCHIVED mem_id:')
             ]
+            post_cleanup_count = len(self.working_context)
+
+            # Log cleanup
+            if pre_cleanup_count != post_cleanup_count:
+                logger.debug(f"RAG cleanup: Removed {pre_cleanup_count - post_cleanup_count} stale system messages")
 
             # 1. Generate embedding for query
+            embed_start = time.time()
             query_embedding = await self.semantic_manager.generate_embedding(query_text)
+            embed_time = (time.time() - embed_start) * 1000
 
             if not query_embedding:
                 logger.warning("Failed to generate query embedding for RAG")
+                metrics_logger.info("RAG_SKIPPED | reason=embedding_generation_failed")
                 return 0
+
+            logger.debug(f"Query embedding generated ({embed_time:.2f}ms, dim={len(query_embedding)})")
 
             # 2. Query memory systems (hybrid retrieval)
             rag_result = await self.semantic_manager.query_memory(
@@ -257,6 +271,7 @@ class ContextManager:
 
             if rag_result.is_empty():
                 logger.info("RAG skipped: No relevant memories found")
+                metrics_logger.info("RAG_SKIPPED | reason=no_relevant_memories")
                 return 0
 
             # 3. Convert to context message and inject
@@ -295,7 +310,8 @@ class ContextManager:
             return rag_result.total_items if rag_message else 0
 
         except Exception as e:
-            logger.error(f"Error during RAG augmentation: {e}")
+            logger.error(f"Error during RAG augmentation: {e}", exc_info=True)
+            metrics_logger.info(f"RAG_ERROR | error={str(e)}")
             return 0
 
     async def _build_state_message(self) -> Optional[Dict[str, str]]:

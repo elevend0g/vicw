@@ -96,10 +96,16 @@ class QdrantVectorDB:
         await asyncio.to_thread(sync_upsert)
         logger.debug(f"Upserted vector for job_id={job_id} in Qdrant")
     
-    async def search(self, query_vector: List[float], top_k: int = 3, filter_dict: Optional[Dict] = None) -> List[Dict]:
+    async def search(self, query_vector: List[float], top_k: int = 3, filter_dict: Optional[Dict] = None, score_threshold: Optional[float] = None) -> List[Dict]:
         """
         Search Qdrant for nearest neighbors.
         Returns list of dicts with job_id, score, and payload.
+
+        Args:
+            query_vector: Query embedding vector
+            top_k: Maximum number of results to return
+            filter_dict: Optional Qdrant filter
+            score_threshold: Minimum similarity score (0.0-1.0). Results below this are filtered out.
         """
         if not self.client:
             raise RuntimeError("Qdrant client not initialized")
@@ -114,6 +120,11 @@ class QdrantVectorDB:
             )
         
         search_results = await asyncio.to_thread(sync_search)
+
+        # Filter by score threshold if provided
+        if score_threshold is not None:
+            search_results = [hit for hit in search_results if hit.score >= score_threshold]
+            logger.debug(f"Score threshold {score_threshold} filtered to {len(search_results)} results")
 
         results = []
         for hit in search_results:
@@ -154,8 +165,30 @@ class QdrantVectorDB:
                     match=MatchValue(value=value)
                 )
             )
-        
+
         return Filter(must=conditions)
+
+    def create_domain_filter(self, domain: str) -> Dict[str, Any]:
+        """
+        Create filter for domain with 'general' as fallback.
+        Searches both the specified domain AND 'general' domain.
+
+        Args:
+            domain: Primary domain to search (e.g., "coding", "creative")
+
+        Returns:
+            Qdrant filter that matches domain OR general
+        """
+        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+
+        # Create OR condition: match specified domain OR general domain
+        conditions = [
+            FieldCondition(key="domain", match=MatchValue(value=domain)),
+            FieldCondition(key="domain", match=MatchValue(value="general"))
+        ]
+
+        # Use 'should' for OR logic (at least one must match)
+        return Filter(should=conditions)
     
     async def get_vector(self, job_id: str) -> Optional[Dict]:
         """Retrieve a specific vector point by job_id"""

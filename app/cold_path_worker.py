@@ -2,10 +2,14 @@
 
 import logging
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
+from typing import Optional
 
 from offload_queue import OffloadQueue
 from semantic_manager import SemanticManager
+from redis_storage import RedisStorage
+from data_models import OffloadJob
 from config import COLD_PATH_BATCH_SIZE, COLD_PATH_WORKERS
 
 logger = logging.getLogger(__name__)
@@ -15,38 +19,52 @@ class ColdPathWorker:
     """
     Background worker that continuously processes the offload queue.
     Runs independently from the hot path.
+    Features:
+    - Orphan recovery on startup
+    - Background processing loop
+    - Sleep cycle for consolidation
     """
-    
-    def __init__(self, offload_queue: OffloadQueue, semantic_manager: SemanticManager):
+
+    def __init__(self, offload_queue: OffloadQueue, semantic_manager: SemanticManager, redis_storage: Optional[RedisStorage] = None):
         self.offload_queue = offload_queue
         self.semantic_manager = semantic_manager
+        self.redis_storage = redis_storage or semantic_manager.redis_storage
         self.is_running = False
         self.is_paused = False
         self.processed_count = 0
         self.failed_count = 0
+        self.recovered_count = 0
         self.worker_task: asyncio.Task = None
-        
+
         # Dedicated thread pool for cold path CPU-bound operations
         self.executor = ThreadPoolExecutor(
             max_workers=COLD_PATH_WORKERS,
             thread_name_prefix='cold_path'
         )
-        
+
         # Inject executor into semantic manager
         self.semantic_manager.executor = self.executor
-        
+
         logger.info(f"ColdPathWorker initialized with {COLD_PATH_WORKERS} workers")
     
     async def start(self):
-        """Start the background worker"""
+        """Start the background worker with orphan recovery"""
         if self.is_running:
             logger.warning("ColdPathWorker already running")
             return
-        
+
         self.is_running = True
+
+        # Step 1: Recover orphaned chunks BEFORE starting main loop
+        await self._recover_orphaned_chunks()
+
+        # Step 2: Start main processing loop
         self.worker_task = asyncio.create_task(self._worker_loop())
+
+        # Step 3: Start sleep cycle (maintenance)
         self.sleep_cycle_task = asyncio.create_task(self._sleep_cycle_loop())
-        logger.info("ColdPathWorker started")
+
+        logger.info("ColdPathWorker started with orphan recovery")
     
     async def stop(self):
         """Stop the background worker gracefully"""
@@ -73,6 +91,99 @@ class ColdPathWorker:
         self.executor.shutdown(wait=True)
         logger.info("ColdPathWorker stopped")
     
+    async def _recover_orphaned_chunks(self):
+        """
+        Scan Redis for chunks that were saved but never fully processed.
+        This runs on startup to prevent data loss from crashes/restarts.
+        """
+        if not self.redis_storage:
+            logger.warning("No Redis storage available for orphan recovery")
+            return
+
+        logger.info("=" * 60)
+        logger.info("ORPHAN RECOVERY: Scanning for unprocessed chunks...")
+        logger.info("=" * 60)
+
+        try:
+            # Get all chunk keys from Redis
+            chunk_keys = self.redis_storage.redis.keys("chunk:job_*")
+
+            if not chunk_keys:
+                logger.info("✅ No chunks found in Redis - no orphans to recover")
+                return
+
+            logger.info(f"Found {len(chunk_keys)} chunks in Redis")
+
+            # Check each chunk to see if it was fully processed
+            for chunk_key in chunk_keys:
+                try:
+                    chunk_key_str = chunk_key.decode() if isinstance(chunk_key, bytes) else chunk_key
+                    job_id = chunk_key_str.replace("chunk:", "")
+
+                    # Get chunk data
+                    chunk_data_raw = self.redis_storage.redis.hgetall(chunk_key_str)
+                    if not chunk_data_raw:
+                        logger.debug(f"  ⏭️ Skipping empty chunk: {job_id}")
+                        continue
+
+                    # Parse chunk data
+                    chunk_data = {
+                        k.decode() if isinstance(k, bytes) else k:
+                        v.decode() if isinstance(v, bytes) else v
+                        for k, v in chunk_data_raw.items()
+                    }
+
+                    # Check if chunk was fully processed by looking for it in Qdrant
+                    # A fully processed chunk will have vectors in Qdrant
+                    chunk_text = chunk_data.get("chunk_text", "")
+                    if not chunk_text:
+                        logger.debug(f"  ⏭️ Skipping chunk with no text: {job_id}")
+                        continue
+
+                    # Check if summary was generated (indicates processing was attempted)
+                    has_summary = bool(chunk_data.get("summary"))
+
+                    # For now, if it has a summary, assume it was processed
+                    # In a more robust system, we'd check Qdrant/Neo4j
+                    if has_summary:
+                        logger.debug(f"  ✅ Chunk already processed: {job_id}")
+                        continue
+
+                    # This chunk was NOT fully processed - reconstruct and enqueue
+                    logger.warning(f"  🔄 Found orphaned chunk: {job_id}")
+
+                    # Reconstruct OffloadJob from Redis data
+                    try:
+                        metadata_str = chunk_data.get("metadata", "{}")
+                        metadata = json.loads(metadata_str) if isinstance(metadata_str, str) else metadata_str
+                    except json.JSONDecodeError:
+                        metadata = {}
+
+                    job = OffloadJob(
+                        job_id=job_id,
+                        chunk_text=chunk_text,
+                        metadata=metadata,
+                        timestamp=float(chunk_data.get("timestamp", 0)),
+                        token_count=int(chunk_data.get("token_count", 0)),
+                        message_count=int(chunk_data.get("message_count", 0)),
+                        summary=chunk_data.get("summary")
+                    )
+
+                    # Enqueue for processing
+                    await self.offload_queue.enqueue(job)
+                    self.recovered_count += 1
+                    logger.info(f"  ↻ Requeued orphaned chunk: {job_id}")
+
+                except Exception as e:
+                    logger.error(f"  ❌ Failed to recover chunk {chunk_key}: {e}")
+
+            logger.info("=" * 60)
+            logger.info(f"ORPHAN RECOVERY COMPLETE: {self.recovered_count} chunks recovered")
+            logger.info("=" * 60)
+
+        except Exception as e:
+            logger.error(f"❌ Orphan recovery failed: {e}", exc_info=True)
+
     async def pause(self):
         """Pause processing (useful during LLM generation)"""
         self.is_paused = True
@@ -245,9 +356,11 @@ class ColdPathWorker:
             "is_paused": self.is_paused,
             "processed_count": self.processed_count,
             "failed_count": self.failed_count,
+            "recovered_count": self.recovered_count,
             "success_rate": (
                 self.processed_count / (self.processed_count + self.failed_count)
                 if (self.processed_count + self.failed_count) > 0
                 else 0
-            )
+            ),
+            "queue_length": len(self.offload_queue.queue) if self.offload_queue else 0
         }

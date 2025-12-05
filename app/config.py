@@ -64,8 +64,13 @@ LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 METRICS_LOG_FILE = os.getenv('METRICS_LOG_FILE', 'vicw_metrics.log')
 
 # RAG Configuration
-RAG_TOP_K_SEMANTIC = int(os.getenv('RAG_TOP_K_SEMANTIC', '2'))
+RAG_TOP_K_SEMANTIC = int(os.getenv('RAG_TOP_K_SEMANTIC', '10'))
 RAG_TOP_K_RELATIONAL = int(os.getenv('RAG_TOP_K_RELATIONAL', '5'))
+
+# RAG Score Threshold - Minimum cosine similarity for Qdrant results
+# Range: 0.0-1.0 (cosine similarity)
+# Recommended: 0.3-0.5 for general use, 0.5-0.7 for high precision
+RAG_SCORE_THRESHOLD = float(os.getenv('RAG_SCORE_THRESHOLD', '0.4'))
 
 # State Tracking Configuration
 STATE_TRACKING_ENABLED = os.getenv('STATE_TRACKING_ENABLED', 'true').lower() == 'true'

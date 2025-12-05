@@ -136,32 +136,36 @@ class StateExtractor:
 
     async def extract_metaphysical_graph(self, text: str, context_domain: str, llm_client: Any = None) -> Dict[str, Any]:
         """
-        Extract Entities and Events using LLM with SPO prompting.
+        Extract Entities and Events using LLM with strict JSON output.
         Returns a dict with 'entities' and 'events' lists.
         """
         if not llm_client:
             logger.warning("No LLM client provided for metaphysical extraction")
             return {"entities": [], "events": []}
 
-        system_prompt = """You are a Knowledge Graph Extractor.
-        Extract 'Entities' (nouns/objects) and 'Events' (actions/occurrences) from the text.
-        
-        Output JSON format:
-        {
-            "entities": [
-                {"name": "EntityName", "subtype": "type", "description": "brief desc"}
-            ],
-            "events": [
-                {"name": "EventName", "subtype": "type", "description": "brief desc", "caused_by": ["EntityName"], "next_event": "EventName"}
-            ]
-        }
-        """
+        # CRITICAL: Strict JSON-only system prompt
+        system_prompt = """You are a JSON extraction engine. You MUST respond with ONLY valid JSON.
+Do not include markdown, explanations, code blocks, or any text outside the JSON object.
+Do not wrap JSON in ```json or ``` blocks.
+Return empty arrays if no entities/events found.
 
-        user_prompt = f"""
-        Domain: {context_domain}
-        Text:
-        {text}
-        """
+Your ONLY output should be valid JSON matching this exact structure:
+{
+  "entities": [{"name": "string", "subtype": "string", "description": "string"}],
+  "events": [{"name": "string", "subtype": "string", "description": "string", "caused_by": ["string"], "next_event": "string or null"}]
+}"""
+
+        # Truncate text to avoid token limits in extraction
+        truncated_text = text[:2000] if len(text) > 2000 else text
+
+        user_prompt = f"""Extract entities (nouns/objects) and events (actions/occurrences) from this text.
+
+Domain: {context_domain}
+
+Text:
+{truncated_text}
+
+Return ONLY the JSON object (no markdown, no explanation):"""
 
         try:
             response = await llm_client.generate(
@@ -169,20 +173,21 @@ class StateExtractor:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                temperature=0.1,  # Lower temperature for consistency
+                max_tokens=4096
             )
 
-            import json
-            # Clean up response (remove markdown code blocks if present)
-            cleaned_response = response.strip()
-            if cleaned_response.startswith("```json"):
-                cleaned_response = cleaned_response[7:]
-            if cleaned_response.startswith("```"):
-                cleaned_response = cleaned_response[3:]
-            if cleaned_response.endswith("```"):
-                cleaned_response = cleaned_response[:-3]
+            logger.info(f"LLM extraction response (first 200 chars): {response[:200]}")
 
-            data = json.loads(cleaned_response.strip())
+            import json
+            # Parse JSON with robust fallbacks
+            data = self._parse_json_response(response)
+
+            # Validate and normalize structure
+            data = self._validate_extraction(data)
+
+            logger.info(f"Extraction succeeded: {len(data.get('entities', []))} entities, {len(data.get('events', []))} events")
             return data
 
         except json.JSONDecodeError as e:
@@ -191,8 +196,94 @@ class StateExtractor:
             return {"entities": [], "events": []}
         except Exception as e:
             logger.error(f"Error in metaphysical extraction: {e}")
-            logger.error(f"Raw LLM response (first 500 chars): {response[:500] if 'response' in locals() else 'N/A'}")
+            if 'response' in locals():
+                logger.error(f"Raw LLM response (first 500 chars): {response[:500]}")
             return {"entities": [], "events": []}
+
+    def _parse_json_response(self, response: str) -> Dict:
+        """
+        Parse JSON from LLM response with multiple fallback strategies.
+        """
+        import json
+        response = response.strip()
+
+        # Strategy 1: Try raw JSON
+        try:
+            return json.loads(response)
+        except json.JSONDecodeError:
+            pass
+
+        # Strategy 2: Remove markdown code blocks (```json ... ```)
+        if "```" in response:
+            # Remove opening ```json or ```
+            cleaned = re.sub(r'^```(?:json)?\s*', '', response, flags=re.MULTILINE)
+            # Remove closing ```
+            cleaned = re.sub(r'\s*```\s*$', '', cleaned, flags=re.MULTILINE)
+            try:
+                return json.loads(cleaned.strip())
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 3: Extract first {...} block
+        match = re.search(r'\{.*\}', response, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        # Strategy 4: Check if response is markdown/text (not JSON)
+        if response.startswith("#") or response.startswith("**") or "analysis" in response.lower()[:100]:
+            logger.warning("LLM returned analysis/markdown instead of JSON, returning empty extraction")
+            return {"entities": [], "events": []}
+
+        # Strategy 5: Last resort - log full response and return empty
+        logger.error(f"Could not parse JSON from response after all strategies")
+        logger.error(f"Full response: {response[:1000]}")
+        return {"entities": [], "events": []}
+
+    def _validate_extraction(self, data: Dict) -> Dict:
+        """
+        Validate and normalize extraction structure.
+        Ensures all required fields exist with correct types.
+        """
+        # Ensure required keys exist
+        if "entities" not in data:
+            data["entities"] = []
+        if "events" not in data:
+            data["events"] = []
+
+        # Validate entities
+        valid_entities = []
+        for entity in data.get("entities", []):
+            if isinstance(entity, dict) and "name" in entity:
+                entity.setdefault("subtype", "Entity")
+                entity.setdefault("description", "")
+                # Ensure all values are strings
+                entity["name"] = str(entity["name"])
+                entity["subtype"] = str(entity["subtype"])
+                entity["description"] = str(entity["description"])
+                valid_entities.append(entity)
+        data["entities"] = valid_entities
+
+        # Validate events
+        valid_events = []
+        for event in data.get("events", []):
+            if isinstance(event, dict) and "name" in event:
+                event.setdefault("subtype", "Event")
+                event.setdefault("description", "")
+                event.setdefault("caused_by", [])
+                event.setdefault("next_event", None)
+                # Ensure correct types
+                event["name"] = str(event["name"])
+                event["subtype"] = str(event["subtype"])
+                event["description"] = str(event["description"])
+                if not isinstance(event["caused_by"], list):
+                    event["caused_by"] = []
+                valid_events.append(event)
+        data["events"] = valid_events
+
+        return data
 
     def reload_config(self):
         """Reload configuration from file"""

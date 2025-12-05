@@ -180,14 +180,17 @@ class SemanticManager:
             })
             
             # 3. Sequence Assignment
-            # For now, we use job.timestamp. flow_id could be job.metadata.get('thread_id')
+            # flow_id represents a logical thread/conversation
             flow_id = job.metadata.get("thread_id", "default_flow")
-            # We need to get the next flow_step. For simplicity, we'll use timestamp as a proxy or just 0
-            # In a real system, we'd query Redis for the last step.
-            flow_step = int(job.timestamp) 
+
+            # For flow_step, we assign sequential integers to events within this batch
+            # In a production system with multiple batches per flow, we'd query Neo4j/Redis
+            # for the max flow_step and increment from there. For now, we start from 0
+            # within each batch and track events for NEXT edge creation.
+            base_flow_step = 0  # Could query Redis: f"flow_step:{flow_id}" for global counter 
 
             # 4. Vector Generation & 5. Graph Materialization
-            
+
             # Create Chunk Node first
             chunk_uid = str(uuid.uuid4())
             await self.neo4j_graph.create_chunk_node({
@@ -197,7 +200,11 @@ class SemanticManager:
                 "domain": domain,
                 "token_count": job.token_count
             })
-            
+
+            # Track event UIDs for NEXT edge creation
+            # Format: [(event_uid, flow_step, flow_id), ...]
+            processed_events = []
+
             # Process Entities
             for entity in entities:
                 entity_uid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{domain}:{entity['name']}"))
@@ -245,9 +252,12 @@ class SemanticManager:
                 )
 
             # Process Events
-            for event in events:
+            for event_idx, event in enumerate(events):
                 event_uid = str(uuid.uuid4()) # Events are unique instances
-                
+
+                # Assign sequential flow_step
+                event_flow_step = base_flow_step + event_idx
+
                 # Contextual Wrapper for Event
                 wrapper_text = self._generate_contextual_wrapper(
                     domain=domain,
@@ -255,10 +265,10 @@ class SemanticManager:
                     name=event["name"],
                     content=event.get("description", "")
                 )
-                
+
                 # Generate Embedding
                 embedding = await self.generate_embedding(wrapper_text)
-                
+
                 if embedding:
                     # Upsert to Qdrant
                     qdrant_payload = {
@@ -269,8 +279,8 @@ class SemanticManager:
                         "type": "Event"
                     }
                     await self.qdrant_db.upsert_vector(f"vec_{event_uid}", embedding, qdrant_payload)
-                
-                # Create Node in Neo4j
+
+                # Create Node in Neo4j with correct flow_step
                 await self.neo4j_graph.create_event_node({
                     "uid": event_uid,
                     "name": event["name"],
@@ -278,7 +288,7 @@ class SemanticManager:
                     "domain": domain,
                     "timestamp": job.timestamp,
                     "flow_id": flow_id,
-                    "flow_step": flow_step,
+                    "flow_step": event_flow_step,
                     "description": event.get("description", ""),
                     "qdrant_id": f"vec_{event_uid}" if embedding else None
                 })
@@ -293,16 +303,57 @@ class SemanticManager:
                     chunk_uid, "Chunk", event_uid, "Event", "MENTIONS"
                 )
                 
-                # Handle 'caused_by' (Entity -> Event)
+                # Handle 'caused_by' (Entity -> Event via INITIATED edge)
                 caused_by_names = event.get("caused_by", [])
                 for cause_name in caused_by_names:
-                    # Try to find the entity UID (assuming deterministic UUID generation)
+                    # Compute entity UID (deterministic UUID based on domain:name)
                     cause_uid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{domain}:{cause_name}"))
-                    # We optimistically create the relationship. If entity doesn't exist, this might fail or we should MERGE entity first.
-                    # For safety, we should probably ensure entity exists. But for now, let's assume extraction found it.
-                    # Actually, create_metaphysical_relationship uses MATCH, so it will fail if nodes don't exist.
-                    # We should probably skip or create a placeholder.
-                    pass 
+
+                    try:
+                        # Create INITIATED edge: Entity -> Event
+                        await self.neo4j_graph.create_metaphysical_relationship(
+                            cause_uid, "Entity",
+                            event_uid, "Event",
+                            "INITIATED"
+                        )
+                        logger.debug(f"Created INITIATED edge: {cause_name} -> {event['name']}")
+                    except Exception as e:
+                        # Entity might not exist if extraction found it in event but not in entities list
+                        logger.warning(f"Failed to create INITIATED edge for {cause_name} -> {event['name']}: {e}")
+
+                # TODO: Implement CAUSED edges (Event -> Event/Entity consequences)
+                # Currently, the extraction format doesn't provide explicit causality data.
+                # To implement this, we would need to:
+                # 1. Enhance the extraction prompt in state_extractor.py to ask for "consequences"
+                # 2. Extract consequence relationships here
+                # 3. Create CAUSED edges with certainty scores
+                # For now, temporal sequencing is captured via NEXT edges (see below)
+
+                # Track this event for NEXT edge creation
+                processed_events.append((event_uid, event_flow_step, flow_id))
+
+            # Create NEXT edges between consecutive events in the same flow_id
+            # Sort by flow_step to ensure correct ordering
+            processed_events.sort(key=lambda x: x[1])  # Sort by flow_step
+
+            for i in range(len(processed_events) - 1):
+                current_event = processed_events[i]
+                next_event = processed_events[i + 1]
+
+                # Only create NEXT edge if both events are in the same flow
+                if current_event[2] == next_event[2]:  # Same flow_id
+                    try:
+                        await self.neo4j_graph.create_metaphysical_relationship(
+                            current_event[0], "Event",  # current event UID
+                            next_event[0], "Event",     # next event UID
+                            "NEXT"
+                        )
+                        logger.debug(f"Created NEXT edge: {current_event[0][:8]} -> {next_event[0][:8]} (flow_step {current_event[1]} -> {next_event[1]})")
+                    except Exception as e:
+                        logger.warning(f"Failed to create NEXT edge: {e}")
+
+            if processed_events:
+                logger.info(f"Created {len(processed_events)-1} NEXT edges for {len(processed_events)} events in flow '{flow_id}'")
 
             process_time = (time.time() - job_start_time) * 1000
             logger.info(f"Completed offload job {job.job_id} in {process_time:.2f}ms")
@@ -386,65 +437,195 @@ class SemanticManager:
         except Exception as e:
             logger.error(f"Error querying summaries: {e}")
             return []
-    
+
+    async def _analyze_intent_robust(self, query_text: str) -> str:
+        """
+        Robust intent analysis with retry logic and keyword fallback.
+        Returns one of: ['coding', 'creative', 'general']
+
+        Strategy:
+        1. Try LLM-based classification (with retry)
+        2. Fall back to keyword detection
+        3. Default to 'general' if all else fails
+        """
+        import json
+        import asyncio
+
+        # 1. Try LLM-based classification with retry
+        if self.llm_client:
+            max_retries = 2
+            retry_delay = 0.5  # seconds
+
+            for attempt in range(max_retries):
+                try:
+                    prompt = f"""Classify the intent of this query into one of: ['coding', 'creative', 'general'].
+
+Query: {query_text}
+
+Return JSON: {{"intent": "coding"}} or {{"intent": "creative"}} or {{"intent": "general"}}"""
+
+                    response = await self.llm_client.generate(
+                        context=[{"role": "user", "content": prompt}],
+                        response_format={"type": "json_object"},
+                        max_tokens=50,  # Keep it short
+                        temperature=0.0  # Deterministic for classification
+                    )
+
+                    # Handle empty response
+                    if not response or not response.strip():
+                        logger.warning(f"Intent analysis attempt {attempt + 1}: Empty LLM response")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        raise ValueError("Empty LLM response")
+
+                    # Parse JSON with better error handling
+                    try:
+                        # Strip markdown code fences if present
+                        cleaned_response = response.strip()
+                        if cleaned_response.startswith("```"):
+                            # Remove opening fence (```json or ```)
+                            lines = cleaned_response.split('\n')
+                            lines = lines[1:]  # Skip first line with ```
+                            # Remove closing fence
+                            if lines and lines[-1].strip().startswith("```"):
+                                lines = lines[:-1]
+                            cleaned_response = '\n'.join(lines).strip()
+
+                        data = json.loads(cleaned_response)
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Intent analysis attempt {attempt + 1}: Malformed JSON: {response[:100]}")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        raise
+
+                    # Validate intent value
+                    intent = data.get("intent", "").lower()
+                    valid_intents = ["coding", "creative", "general"]
+
+                    if intent not in valid_intents:
+                        logger.warning(f"Intent analysis attempt {attempt + 1}: Invalid intent '{intent}'")
+                        if attempt < max_retries - 1:
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        raise ValueError(f"Invalid intent: {intent}")
+
+                    logger.info(f"Intent analysis succeeded: '{intent}' (attempt {attempt + 1})")
+                    return intent
+
+                except Exception as e:
+                    logger.warning(f"Intent analysis attempt {attempt + 1} failed: {e}")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        logger.error(f"Intent analysis failed after {max_retries} attempts, falling back to keyword detection")
+
+        # 2. Keyword-based fallback detection
+        query_lower = query_text.lower()
+
+        # Coding keywords
+        coding_keywords = [
+            'function', 'class', 'method', 'variable', 'code', 'debug', 'error',
+            'python', 'javascript', 'java', 'rust', 'go', 'c++', 'typescript',
+            'api', 'database', 'algorithm', 'bug', 'refactor', 'test', 'compile',
+            'import', 'package', 'module', 'library', 'framework'
+        ]
+
+        # Creative keywords
+        creative_keywords = [
+            'story', 'character', 'plot', 'scene', 'chapter', 'narrative',
+            'protagonist', 'antagonist', 'dialogue', 'setting', 'theme',
+            'novel', 'fiction', 'fantasy', 'sci-fi', 'adventure', 'mystery',
+            'write', 'writing', 'creative', 'imagination', 'world-building'
+        ]
+
+        # Count keyword matches
+        coding_matches = sum(1 for kw in coding_keywords if kw in query_lower)
+        creative_matches = sum(1 for kw in creative_keywords if kw in query_lower)
+
+        if coding_matches > creative_matches and coding_matches >= 1:
+            logger.info(f"Intent detected via keyword fallback: 'coding' ({coding_matches} matches)")
+            return "coding"
+        elif creative_matches > coding_matches and creative_matches >= 1:
+            logger.info(f"Intent detected via keyword fallback: 'creative' ({creative_matches} matches)")
+            return "creative"
+
+        # 3. Default to general
+        logger.info("Intent defaulted to 'general' (no LLM or keyword match)")
+        return "general"
+
     async def retrieve_metaphysical_context(self, query_text: str, query_embedding: List[float], top_k: int = 5) -> RAGResult:
         """
         Retrieve context using the Metaphysical Schema strategy.
-        1. Intent Analysis
-        2. Vector Filter Scan
+        1. Intent Analysis (with robust fallback)
+        2. Vector Filter Scan (with score threshold)
         3. Graph Expansion
         4. Synthesis
         """
-        start_time = time.time()
-        
-        # 1. Intent Analysis (LLM)
-        intent = "general"
-        if self.llm_client:
-            try:
-                prompt = f"""Classify the intent of this query into one of: ['coding', 'creative', 'general'].
-                Query: {query_text}
-                Return JSON: {{"intent": "..."}}"""
-                
-                response = await self.llm_client.generate(
-                    context=[{"role": "user", "content": prompt}],
-                    response_format={"type": "json_object"}
-                )
-                import json
-                data = json.loads(response)
-                intent = data.get("intent", "general").lower()
-            except Exception as e:
-                logger.warning(f"Intent analysis failed: {e}")
+        from config import RAG_SCORE_THRESHOLD
 
-        # 2. Vector Filter Scan (Qdrant)
+        start_time = time.time()
+
+        logger.info("=" * 60)
+        logger.info("RAG RETRIEVAL START")
+        logger.info(f"Query: {query_text[:100]}...")
+        logger.info("=" * 60)
+
+        # 1. Intent Analysis (Robust with fallback)
+        intent_start = time.time()
+        intent = await self._analyze_intent_robust(query_text)
+        intent_time = (time.time() - intent_start) * 1000
+
+        logger.info(f"Intent Analysis: '{intent}' ({intent_time:.2f}ms)")
+
+        # 2. Vector Filter Scan (Qdrant with score threshold)
         # Construct filter based on intent
+        # Strategy: Search specific domain + "general" as fallback
         filter_dict = None
         if intent != "general":
-            # We filter by domain. Note: This assumes 'domain' field in payload matches intent.
-            # In reality, 'coding' intent might map to 'coding' domain, 'creative' to 'story', etc.
-            # For simplicity, we use direct mapping or fallback.
+            # Map intent to domain
             domain_map = {"coding": "coding", "creative": "story"}
             domain = domain_map.get(intent, intent)
-            
-            filter_dict = self.qdrant_db.create_filter([
-                {"key": "domain", "match": {"value": domain}}
-            ])
 
+            # Use OR filter: search both specific domain AND general domain
+            filter_dict = self.qdrant_db.create_domain_filter(domain)
+            logger.info(f"Applying domain filter: {domain} OR general")
+        else:
+            logger.info("Using general intent (no domain filter)")
+
+        # Search with score threshold
+        search_start = time.time()
         search_results = await self.qdrant_db.search(
-            query_embedding, 
-            top_k=top_k, 
-            filter_dict=filter_dict
+            query_embedding,
+            top_k=top_k,
+            filter_dict=filter_dict,
+            score_threshold=RAG_SCORE_THRESHOLD  # NEW
         )
-        
+        search_time = (time.time() - search_start) * 1000
+
+        # Log search results
+        logger.info(f"Qdrant Search: {len(search_results)} results above threshold {RAG_SCORE_THRESHOLD} ({search_time:.2f}ms)")
+        if search_results:
+            scores = [r.get('score', 0) for r in search_results]
+            logger.info(f"  Score range: {min(scores):.3f} - {max(scores):.3f}")
+        else:
+            logger.warning("  No results passed score threshold - RAG will be skipped")
+
         # Extract Node UIDs and Semantic Chunks
         node_uids = []
         semantic_chunks = []
-        
-        for result in search_results:
+
+        for idx, result in enumerate(search_results, 1):
             payload = result.get('payload', {})
+            score = result.get('score', 0)
             node_id = payload.get('node_id')
+
+            logger.debug(f"  Result {idx}: score={score:.3f}, node_id={node_id}, type={payload.get('type')}")
+
             if node_id:
                 node_uids.append(node_id)
-            
+
             # Also get the content (summary or compressed text)
             if payload.get('chunk_text_compressed'):
                 try:
@@ -458,20 +639,44 @@ class SemanticManager:
                 semantic_chunks.append(payload['summary'])
 
         # 3. Graph Expansion (Neo4j)
-        expanded_context = await self.neo4j_graph.expand_metaphysical_context(node_uids)
-        
+        if node_uids:
+            graph_start = time.time()
+            expanded_context = await self.neo4j_graph.expand_metaphysical_context(node_uids)
+            graph_time = (time.time() - graph_start) * 1000
+            logger.info(f"Neo4j Graph Expansion: {len(expanded_context)} nodes expanded ({graph_time:.2f}ms)")
+        else:
+            expanded_context = []
+            logger.info("Neo4j Graph Expansion: Skipped (no node UIDs from Qdrant)")
+
         # 4. Synthesis (Format for RAGResult)
         relational_facts = []
         for item in expanded_context:
             node = item['node']
             node_str = f"[{node.get('type', 'Node')}: {node.get('name')}] {node.get('description', '')}"
             relational_facts.append(node_str)
-            
+
             for rel in item['relationships']:
                 relational_facts.append(f"  - {rel}")
-                
+
         retrieval_time = (time.time() - start_time) * 1000
-        
+
+        logger.info("=" * 60)
+        logger.info("RAG RETRIEVAL COMPLETE")
+        logger.info(f"Total Time: {retrieval_time:.2f}ms")
+        logger.info(f"Results: {len(semantic_chunks)} semantic chunks, {len(relational_facts)} relational facts")
+        logger.info("=" * 60)
+
+        # Log to metrics logger
+        metrics_logger.info(
+            f"SEMANTIC_RETRIEVAL | "
+            f"intent={intent} | "
+            f"query_length={len(query_text)} | "
+            f"qdrant_results={len(search_results)} | "
+            f"semantic_chunks={len(semantic_chunks)} | "
+            f"relational_facts={len(relational_facts)} | "
+            f"total_time_ms={retrieval_time:.2f}"
+        )
+
         return RAGResult(
             semantic_chunks=semantic_chunks,
             relational_facts=relational_facts,

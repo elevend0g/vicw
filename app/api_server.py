@@ -269,7 +269,7 @@ async def startup_event():
         
         # Initialize and start cold path worker
         logger.info("Starting cold path worker...")
-        cold_path_worker = ColdPathWorker(offload_queue, semantic_manager)
+        cold_path_worker = ColdPathWorker(offload_queue, semantic_manager, redis_storage)
         await cold_path_worker.start()
         
         # Load system prompt if available
