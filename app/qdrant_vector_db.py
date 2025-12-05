@@ -5,7 +5,7 @@ import logging
 import asyncio
 from typing import List, Dict, Any, Optional
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams, PointStruct, CollectionStatus
+from qdrant_client.http.models import Distance, VectorParams, PointStruct, CollectionStatus, Filter
 from qdrant_client.http.exceptions import UnexpectedResponse
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ class QdrantVectorDB:
         await asyncio.to_thread(sync_upsert)
         logger.debug(f"Upserted vector for job_id={job_id} in Qdrant")
     
-    async def search(self, query_vector: List[float], top_k: int = 3, filter_dict: Optional[Dict] = None, score_threshold: Optional[float] = None) -> List[Dict]:
+    async def search(self, query_vector: List[float], top_k: int = 3, query_filter: Optional[Filter] = None, score_threshold: Optional[float] = None) -> List[Dict]:
         """
         Search Qdrant for nearest neighbors.
         Returns list of dicts with job_id, score, and payload.
@@ -104,19 +104,19 @@ class QdrantVectorDB:
         Args:
             query_vector: Query embedding vector
             top_k: Maximum number of results to return
-            filter_dict: Optional Qdrant filter
+            query_filter: Optional Qdrant Filter object
             score_threshold: Minimum similarity score (0.0-1.0). Results below this are filtered out.
         """
         if not self.client:
             raise RuntimeError("Qdrant client not initialized")
-        
+
         def sync_search():
             return self.client.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector,
                 limit=top_k,
                 with_payload=True,
-                query_filter=filter_dict
+                query_filter=query_filter
             )
         
         search_results = await asyncio.to_thread(sync_search)
@@ -144,7 +144,7 @@ class QdrantVectorDB:
 
         return results
     
-    def create_filter(self, must_conditions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def create_filter(self, must_conditions: List[Dict[str, Any]]) -> Filter:
         """
         Helper to create Qdrant filters.
         Example:
@@ -152,8 +152,11 @@ class QdrantVectorDB:
                 {"key": "domain", "match": {"value": "coding"}},
                 {"key": "subtype", "match": {"value": "method"}}
             ]
+
+        Returns:
+            Filter object ready to pass to search()
         """
-        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.http.models import FieldCondition, MatchValue
 
         conditions = []
         for cond in must_conditions:
@@ -168,7 +171,7 @@ class QdrantVectorDB:
 
         return Filter(must=conditions)
 
-    def create_domain_filter(self, domain: str) -> Dict[str, Any]:
+    def create_domain_filter(self, domain: str) -> Filter:
         """
         Create filter for domain with 'general' as fallback.
         Searches both the specified domain AND 'general' domain.
@@ -177,9 +180,9 @@ class QdrantVectorDB:
             domain: Primary domain to search (e.g., "coding", "creative")
 
         Returns:
-            Qdrant filter that matches domain OR general
+            Filter object with OR logic (domain OR general)
         """
-        from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+        from qdrant_client.http.models import FieldCondition, MatchValue
 
         # Create OR condition: match specified domain OR general domain
         conditions = [

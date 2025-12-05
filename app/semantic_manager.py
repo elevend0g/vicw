@@ -227,7 +227,8 @@ class SemanticManager:
                         "node_id": entity_uid,
                         "subtype": entity.get("subtype", "entity"),
                         "name": entity["name"],
-                        "type": "Entity"
+                        "type": "Entity",
+                        "chunk_text": job.chunk_text  # Store full chunk for retrieval
                     }
                     await self.qdrant_db.upsert_vector(f"vec_{entity_uid}", embedding, qdrant_payload)
                 
@@ -276,7 +277,8 @@ class SemanticManager:
                         "node_id": event_uid,
                         "subtype": event.get("subtype", "event"),
                         "name": event["name"],
-                        "type": "Event"
+                        "type": "Event",
+                        "chunk_text": job.chunk_text  # Store full chunk for retrieval
                     }
                     await self.qdrant_db.upsert_vector(f"vec_{event_uid}", embedding, qdrant_payload)
 
@@ -582,14 +584,14 @@ Return JSON: {{"intent": "coding"}} or {{"intent": "creative"}} or {{"intent": "
         # 2. Vector Filter Scan (Qdrant with score threshold)
         # Construct filter based on intent
         # Strategy: Search specific domain + "general" as fallback
-        filter_dict = None
+        query_filter = None
         if intent != "general":
             # Map intent to domain
             domain_map = {"coding": "coding", "creative": "story"}
             domain = domain_map.get(intent, intent)
 
             # Use OR filter: search both specific domain AND general domain
-            filter_dict = self.qdrant_db.create_domain_filter(domain)
+            query_filter = self.qdrant_db.create_domain_filter(domain)
             logger.info(f"Applying domain filter: {domain} OR general")
         else:
             logger.info("Using general intent (no domain filter)")
@@ -599,7 +601,7 @@ Return JSON: {{"intent": "coding"}} or {{"intent": "creative"}} or {{"intent": "
         search_results = await self.qdrant_db.search(
             query_embedding,
             top_k=top_k,
-            filter_dict=filter_dict,
+            query_filter=query_filter,
             score_threshold=RAG_SCORE_THRESHOLD  # NEW
         )
         search_time = (time.time() - search_start) * 1000
@@ -626,17 +628,49 @@ Return JSON: {{"intent": "coding"}} or {{"intent": "creative"}} or {{"intent": "
             if node_id:
                 node_uids.append(node_id)
 
-            # Also get the content (summary or compressed text)
-            if payload.get('chunk_text_compressed'):
+            # Extract chunk text with fallback hierarchy
+            # PRIORITY 1: chunk_text from payload (new field with full document text)
+            if payload.get('chunk_text'):
+                semantic_chunks.append(payload['chunk_text'])
+                logger.debug(f"  Retrieved chunk_text from payload ({len(payload['chunk_text'])} chars)")
+            # PRIORITY 2: Compressed full text (legacy V1.0 data)
+            elif payload.get('chunk_text_compressed'):
                 try:
                     compressed_bytes = bytes.fromhex(payload['chunk_text_compressed'])
                     text = self._decompressor.decompress(compressed_bytes).decode('utf-8')
                     semantic_chunks.append(text)
-                except:
+                    logger.debug(f"  Retrieved decompressed text ({len(text)} chars)")
+                except Exception as e:
+                    logger.warning(f"  Decompression failed: {e}")
+                    # Fall through to next priority
                     if payload.get('summary'):
                         semantic_chunks.append(payload['summary'])
+            # PRIORITY 3: Summary fallback
             elif payload.get('summary'):
                 semantic_chunks.append(payload['summary'])
+                logger.debug(f"  Retrieved summary ({len(payload['summary'])} chars)")
+            # PRIORITY 4: Fetch from Redis using node_id
+            elif node_id:
+                try:
+                    redis_chunk = await self.redis_storage.get_chunk_by_id(node_id)
+                    if redis_chunk and redis_chunk.get('chunk_text'):
+                        semantic_chunks.append(redis_chunk['chunk_text'])
+                        logger.debug(f"  Retrieved from Redis ({len(redis_chunk['chunk_text'])} chars)")
+                    else:
+                        logger.warning(f"  No content found for node_id={node_id}")
+                except Exception as e:
+                    logger.warning(f"  Redis fetch failed for node_id={node_id}: {e}")
+
+        # Verification logging
+        logger.info(f"Content retrieval breakdown:")
+        logger.info(f"  Total results: {len(search_results)}")
+        logger.info(f"  Chunks retrieved: {len(semantic_chunks)}")
+        if semantic_chunks:
+            # Show preview of first chunk
+            first_chunk_preview = semantic_chunks[0][:200] if len(semantic_chunks[0]) > 200 else semantic_chunks[0]
+            logger.info(f"  First chunk preview: {first_chunk_preview}...")
+        else:
+            logger.warning(f"  ⚠️  NO CHUNKS RETRIEVED - Check storage pipeline")
 
         # 3. Graph Expansion (Neo4j)
         if node_uids:
