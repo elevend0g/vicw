@@ -25,7 +25,7 @@ Get up and running with VICW in under 5 minutes!
 
 ```bash
 # Clone or navigate to the project directory
-cd vicw_phase2
+cd vicw
 
 # Copy the example environment file
 cp .env.example .env
@@ -66,7 +66,7 @@ docker-compose logs -f vicw_api
 
 Wait until you see:
 ```
-INFO:     VICW Phase 2 API Server ready!
+INFO:     VICW API Server ready!
 ```
 
 ## Step 4: Test the System
@@ -80,7 +80,7 @@ Expected response:
 ```json
 {
   "status": "healthy",
-  "system": "VICW Phase 2",
+  "system": "VICW",
   "model": "mistralai/mistral-7b-instruct",
   "context_initialized": true,
   "llm_initialized": true

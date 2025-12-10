@@ -45,7 +45,7 @@ If OpenWebUI is on a different machine:
    - **Base URL**: `http://localhost:8000/v1` (or appropriate URL from above)
    - **API Key**: Leave empty or enter any value (not validated)
 4. Save the settings
-5. The model `openai/gpt-oss-120b` should now appear in your model list
+5. The model `vicw-openai/gpt-oss-120b` should now appear in your model list
 
 ### Method 2: Use Environment Variables (Docker Compose)
 
