@@ -14,7 +14,9 @@ from config import (
     TARGET_AFTER_RELIEF,
     HYSTERESIS_THRESHOLD,
     STATE_TRACKING_ENABLED,
-    STATE_INJECTION_LIMITS
+    STATE_INJECTION_LIMITS,
+    PROACTIVE_EMBED_ENABLED,
+    PROACTIVE_EMBED_THRESHOLD
 )
 
 logger = logging.getLogger(__name__)
@@ -179,12 +181,49 @@ class ContextManager:
         """
         Main entry point: add message and trigger pressure relief if needed.
         This is the HOT PATH and should be as fast as possible.
-        
+
         Implements hysteresis to prevent thrashing.
+
+        NEW: Proactive embedding - large messages are queued for background
+        embedding immediately, even if pressure threshold isn't reached.
         """
         # Add the new message
         self.working_context.append({"role": role, "content": content})
-        
+
+        # PROACTIVE EMBEDDING: Queue large messages for background embedding
+        # This enables eager indexing of knowledge without waiting for pressure relief
+        if PROACTIVE_EMBED_ENABLED:
+            message_tokens = self._estimate_tokens(content)
+            if message_tokens >= PROACTIVE_EMBED_THRESHOLD:
+                # Create offload job for this message (without removing from context)
+                job = OffloadJob(
+                    job_id=f"job_proactive_{uuid.uuid4().hex[:8]}",
+                    chunk_text=content,
+                    metadata={
+                        "source": "proactive_embed",
+                        "role": role,
+                        "domain": "general"  # Could be enhanced with intent detection
+                    },
+                    timestamp=time.time(),
+                    token_count=message_tokens,
+                    message_count=1
+                )
+
+                # Enqueue for background processing
+                await self.offload_queue.enqueue(job)
+
+                logger.info(
+                    f"PROACTIVE_EMBED: Queued message for background indexing "
+                    f"({message_tokens} tokens, job_id={job.job_id})"
+                )
+
+                metrics_logger.info(
+                    f"PROACTIVE_EMBED | "
+                    f"job_id={job.job_id} | "
+                    f"tokens={message_tokens} | "
+                    f"role={role}"
+                )
+
         # Check context pressure
         current_tokens = self._token_count()
         pressure_threshold = int(self.max_context * OFFLOAD_THRESHOLD)

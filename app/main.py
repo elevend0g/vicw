@@ -93,18 +93,19 @@ async def main():
         # Initialize embedding model
         logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}...")
         
-        from config import EMBEDDING_MODEL_TYPE, EMBEDDING_MODEL_PATH
-        
+        from config import EMBEDDING_MODEL_TYPE, EMBEDDING_MODEL_PATH, EMBEDDING_MODEL_CTX
+
         if EMBEDDING_MODEL_TYPE == 'llama_cpp':
             try:
                 from llama_cpp import Llama
-                # Initialize Llama for embeddings
+                # Initialize Llama for embeddings with full context
                 embedding_model = Llama(
                     model_path=EMBEDDING_MODEL_PATH,
                     embedding=True,
+                    n_ctx=EMBEDDING_MODEL_CTX,
                     verbose=False
                 )
-                logger.info(f"Loaded GGUF model from {EMBEDDING_MODEL_PATH}")
+                logger.info(f"Loaded GGUF model from {EMBEDDING_MODEL_PATH} (n_ctx={EMBEDDING_MODEL_CTX})")
             except ImportError:
                 logger.error("llama-cpp-python not installed. Falling back to SentenceTransformer.")
                 embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)

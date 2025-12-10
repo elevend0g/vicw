@@ -90,6 +90,18 @@ class ChatResponse(BaseModel):
     rag_items_injected: Optional[int] = 0
 
 
+class IngestRequest(BaseModel):
+    document: str
+    metadata: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
+
+class IngestResponse(BaseModel):
+    status: str
+    job_id: str
+    tokens: int
+    message: str
+
+
 # ============================================================================
 # OpenAI-Compatible API Models
 # ============================================================================
@@ -209,18 +221,19 @@ async def startup_event():
         # Initialize embedding model
         logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}...")
 
-        from config import EMBEDDING_MODEL_TYPE, EMBEDDING_MODEL_PATH
+        from config import EMBEDDING_MODEL_TYPE, EMBEDDING_MODEL_PATH, EMBEDDING_MODEL_CTX
 
         if EMBEDDING_MODEL_TYPE == 'llama_cpp':
             try:
                 from llama_cpp import Llama
-                # Initialize Llama for embeddings
+                # Initialize Llama for embeddings with full context
                 embedding_model = Llama(
                     model_path=EMBEDDING_MODEL_PATH,
                     embedding=True,
+                    n_ctx=EMBEDDING_MODEL_CTX,
                     verbose=False
                 )
-                logger.info(f"Loaded GGUF model from {EMBEDDING_MODEL_PATH}")
+                logger.info(f"Loaded GGUF model from {EMBEDDING_MODEL_PATH} (n_ctx={EMBEDDING_MODEL_CTX})")
             except ImportError:
                 logger.error("llama-cpp-python not installed. Falling back to SentenceTransformer.")
                 from sentence_transformers import SentenceTransformer
@@ -314,6 +327,64 @@ async def shutdown_event():
         await neo4j_graph.close()
     
     logger.info("VICW Phase 2 API Server shutdown complete")
+
+
+@app.post("/ingest", response_model=IngestResponse)
+async def ingest_document(request: IngestRequest):
+    """
+    Ingest a large document for background embedding and indexing.
+
+    This endpoint bypasses the chat context entirely and directly queues
+    the document for cold path processing. Ideal for knowledge bases,
+    documentation, and other reference material.
+
+    The document is immediately queued for extraction and embedding,
+    so it will be available for RAG retrieval within seconds/minutes.
+    """
+    global offload_queue
+
+    if not offload_queue:
+        raise HTTPException(status_code=503, detail="Offload queue not initialized")
+
+    try:
+        from data_models import OffloadJob
+        import uuid
+        import time
+
+        # Estimate token count
+        message_tokens = len(request.document.split()) / 0.75
+
+        # Create offload job directly (bypass chat context)
+        job = OffloadJob(
+            job_id=f"job_ingest_{uuid.uuid4().hex[:8]}",
+            chunk_text=request.document,
+            metadata={
+                **request.metadata,
+                "source": "ingest_endpoint"
+            },
+            timestamp=time.time(),
+            token_count=int(message_tokens),
+            message_count=1
+        )
+
+        # Enqueue for immediate background processing
+        await offload_queue.enqueue(job)
+
+        logger.info(
+            f"INGEST: Queued document for background processing "
+            f"({int(message_tokens)} tokens, job_id={job.job_id})"
+        )
+
+        return IngestResponse(
+            status="queued",
+            job_id=job.job_id,
+            tokens=int(message_tokens),
+            message=f"Document queued for background embedding ({int(message_tokens)} tokens)"
+        )
+
+    except Exception as e:
+        logger.error(f"Error in /ingest endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/chat", response_model=ChatResponse)

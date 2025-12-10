@@ -209,12 +209,12 @@ class SemanticManager:
             for entity in entities:
                 entity_uid = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{domain}:{entity['name']}"))
                 
-                # Contextual Wrapper for Entity
+                # Contextual Wrapper for Entity - use full chunk text for better semantic matching
                 wrapper_text = self._generate_contextual_wrapper(
                     domain=domain,
                     subtype=entity.get("subtype", "entity"),
                     name=entity["name"],
-                    content=entity.get("description", "")
+                    content=job.chunk_text
                 )
                 
                 # Generate Embedding
@@ -259,12 +259,12 @@ class SemanticManager:
                 # Assign sequential flow_step
                 event_flow_step = base_flow_step + event_idx
 
-                # Contextual Wrapper for Event
+                # Contextual Wrapper for Event - use full chunk text for better semantic matching
                 wrapper_text = self._generate_contextual_wrapper(
                     domain=domain,
                     subtype=event.get("subtype", "event"),
                     name=event["name"],
-                    content=event.get("description", "")
+                    content=job.chunk_text
                 )
 
                 # Generate Embedding

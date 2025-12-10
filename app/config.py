@@ -49,15 +49,20 @@ NEO4J_USER = os.getenv('NEO4J_USER', 'neo4j')
 NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD', 'password')
 
 # Embedding Model Configuration
-# Embedding Model Configuration
 EMBEDDING_MODEL_TYPE = os.getenv('EMBEDDING_MODEL_TYPE', 'llama_cpp') # 'sentence_transformer' or 'llama_cpp'
 EMBEDDING_MODEL_NAME = os.getenv('EMBEDDING_MODEL_NAME', 'snowflake-arctic-embed-l-v2.0-q8_0.gguf')
 EMBEDDING_MODEL_PATH = os.getenv('EMBEDDING_MODEL_PATH', 'models/snowflake-arctic-embed-l-v2.0-q8_0.gguf')
+EMBEDDING_MODEL_CTX = int(os.getenv('EMBEDDING_MODEL_CTX', '8192'))  # Full context for Snowflake Arctic (8192 train ctx)
 
 # Cold Path Configuration
 COLD_PATH_BATCH_SIZE = int(os.getenv('COLD_PATH_BATCH_SIZE', '3'))
 COLD_PATH_WORKERS = int(os.getenv('COLD_PATH_WORKERS', '4'))
 MAX_OFFLOAD_QUEUE_SIZE = int(os.getenv('MAX_OFFLOAD_QUEUE_SIZE', '100'))
+
+# Proactive Embedding Configuration
+# Enable eager embedding of large messages in background (even below pressure threshold)
+PROACTIVE_EMBED_ENABLED = os.getenv('PROACTIVE_EMBED_ENABLED', 'true').lower() == 'true'
+PROACTIVE_EMBED_THRESHOLD = int(os.getenv('PROACTIVE_EMBED_THRESHOLD', '500'))  # Tokens threshold for proactive embedding
 
 # Logging Configuration
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
