@@ -1,4 +1,4 @@
-"""Main orchestrator for VICW Phase 2 - CLI mode"""
+"""Main orchestrator for VICW - CLI mode"""
 
 import os
 import logging
@@ -55,13 +55,13 @@ async def main():
     """Main async orchestrator for CLI mode"""
     
     print("=" * 60)
-    print("VICW Phase 2 - Virtual Infinite Context Window")
+    print("VICW - Virtual Infinite Context Window")
     print("Type 'exit' to quit, 'stats' for statistics")
     print("=" * 60)
     print()
     
     logger.info("=" * 60)
-    logger.info("VICW SESSION STARTED (PHASE 2)")
+    logger.info("VICW SESSION STARTED")
     logger.info("=" * 60)
     
     # Initialize components
@@ -165,7 +165,7 @@ async def main():
             logger.warning(f"System prompt not found at {system_prompt_path}")
         
         logger.info("=" * 60)
-        logger.info("VICW Phase 2 system ready")
+        logger.info("VICW system ready")
         logger.info(f"LLM: {EXTERNAL_MODEL_NAME}")
         logger.info(f"Max context: {MAX_CONTEXT_TOKENS} tokens")
         logger.info("=" * 60)

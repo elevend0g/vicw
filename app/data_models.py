@@ -1,4 +1,4 @@
-"""Data models for VICW Phase 2"""
+"""Data models for VICW"""
 
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional

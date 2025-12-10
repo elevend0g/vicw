@@ -1,4 +1,4 @@
-"""Configuration constants for VICW Phase 2"""
+"""Configuration constants for VICW"""
 
 import os
 import json
@@ -6,7 +6,7 @@ import json
 # API Configuration
 API_HOST = os.getenv('API_HOST', '0.0.0.0')
 API_PORT = int(os.getenv('API_PORT', '8000'))
-API_TITLE = "VICW Phase 2 API"
+API_TITLE = "VICW API"
 API_VERSION = "2.0.0"
 
 # External LLM Configuration

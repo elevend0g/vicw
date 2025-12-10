@@ -1,4 +1,4 @@
-"""FastAPI server for VICW Phase 2"""
+"""FastAPI server for VICW"""
 
 import os
 import logging
@@ -186,7 +186,7 @@ async def startup_event():
     global redis_storage, qdrant_db, neo4j_graph
 
     logger.info("=" * 60)
-    logger.info("Starting VICW Phase 2 API Server")
+    logger.info("Starting VICW API Server")
     logger.info("=" * 60)
 
     try:
@@ -294,7 +294,7 @@ async def startup_event():
             logger.info("System prompt loaded")
         
         logger.info("=" * 60)
-        logger.info("VICW Phase 2 API Server ready!")
+        logger.info("VICW API Server ready!")
         logger.info(f"LLM: {EXTERNAL_MODEL_NAME}")
         logger.info(f"Max context: {MAX_CONTEXT_TOKENS} tokens")
         logger.info("=" * 60)
@@ -309,7 +309,7 @@ async def shutdown_event():
     """Cleanup on shutdown"""
     global context_manager, llm, cold_path_worker, redis_storage, qdrant_db, neo4j_graph
     
-    logger.info("Shutting down VICW Phase 2 API Server...")
+    logger.info("Shutting down VICW API Server...")
     
     if cold_path_worker:
         await cold_path_worker.shutdown()
@@ -326,7 +326,7 @@ async def shutdown_event():
     if neo4j_graph:
         await neo4j_graph.close()
     
-    logger.info("VICW Phase 2 API Server shutdown complete")
+    logger.info("VICW API Server shutdown complete")
 
 
 @app.post("/ingest", response_model=IngestResponse)
@@ -608,7 +608,7 @@ async def health():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "system": "VICW Phase 2",
+        "system": "VICW",
         "model": VICW_BRANDED_MODEL_NAME,
         "context_initialized": context_manager is not None,
         "llm_initialized": llm is not None

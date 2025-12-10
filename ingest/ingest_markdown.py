@@ -8,7 +8,7 @@ semantic manager pipeline.
 
 Usage:
     python ingest/ingest_markdown.py ingest/chapter_1.md --domain creative
-    python ingest/ingest_markdown.py ingest/*.md --domain creative
+    python ingest/ingest_markdown.py ingest/*.md --domain <domain>
 """
 
 import sys
