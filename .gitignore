@@ -62,6 +62,7 @@ Thumbs.db
 htmlcov/
 tests/
 development/
+ingest/
 
 # Jupyter
 .ipynb_checkpoints

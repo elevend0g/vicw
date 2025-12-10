@@ -1,4 +1,4 @@
-# Quick Start Guide - VICW Phase 2
+# Quick Start Guide
 
 Get up and running with VICW in under 5 minutes!
 
