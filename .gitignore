@@ -68,6 +68,5 @@ ingest/
 .ipynb_checkpoints
 
 # Model cache
-models/*
 .cache/
 CLAUDE.md
